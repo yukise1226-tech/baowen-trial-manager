@@ -2321,6 +2321,7 @@ function task36RowHTML(r, exp){
     if(r.adjusted) planCell+=' <span class="adjbadge" title="原始节点时间：'+esc(fmtFull(r.originalPlanTime))+'">已调</span>';
     if(r.weekendShifted) planCell+=' <span class="adjbadge" title="周末节点按协议顺延至周一">周末顺延</span>';
     if(r.day===0 && r.weekend) planCell+=' <span class="weekend" title="Day0 放入不因周末顺延">周末·不顺延</span>';
+    planCell+='<div class="muted" style="font-size:11px">'+(r.day===0?'原计划开始：':'标准节点：')+esc(fmtCompact(r.originalPlanTime))+'</div>';
   }
   var actual=r.actualTime?('<span class="dt" title="'+esc(fmtFull(r.actualTime))+'">'+esc(fmtCompact(r.actualTime))+'</span>'):'<span class="muted">—</span>';
   if(r.ex.person) actual+='<br><span class="muted">'+esc(r.ex.person)+'</span>';
@@ -2598,7 +2599,7 @@ function openAdjust36Plan(exp,row){
   openModal('<h3>调整 36℃任务计划</h3><div class="confirmbox">试验：<b>'+esc(exp.no||'(未编号)')+'</b><br>'
     +'操作：<b>Day'+row.day+' '+esc(row.action)+'</b> ｜ 检测：<b>'+esc(row.detection)+'</b><br>'
     +'计划操作时间：<b class="dt">'+esc(fmtFull(row.currentPlanTime))+'</b><br>'
-    +'原始节点时间：<b class="dt">'+esc(fmtFull(row.originalPlanTime))+'</b><br>'
+    +(row.day===0?'原计划开始时间：':'标准节点时间：')+'<b class="dt">'+esc(fmtFull(row.originalPlanTime))+'</b><br>'
     +(row.taskKey==='start'?'调整 Day0 放入计划后，尚未单独调整的后续节点会按新的唯一时间基准一起重算；确认实际放入后再切换为真实起点。<br>':'单独调整只影响本节点，不改变 Day0 或其他 Day。<br>')
     +'周末规则：Day0 不顺延；后续节点即使手工选在周末，也顺延至周一。</div><div class="confirmbox">新的计划操作时间<br>'
     +'<input type="datetime-local" data-act="adjust36Time" data-day="'+row.day+'" value="'+esc(val)+'"><div data-act="adjust36Preview"></div></div>'
@@ -2912,6 +2913,7 @@ function today36Row(r){
     +(r.adjusted?' <span class="adjmark" title="原始节点时间 '+esc(fmtFull(r.originalPlanTime))+'">已调整</span>':'')
     +(r.weekendShifted?' <span class="adjmark" title="周末节点按协议顺延至周一">周末顺延</span>':'')
     +(r.day===0&&r.weekend?' <span class="weekend">周末·不顺延</span>':'');
+  plan+='<div class="muted" style="font-size:11px">'+(r.day===0?'原计划开始：':'标准节点：')+esc(fmtCompact(r.originalPlanTime))+'</div>';
   var qty,time,person,note,ops;
   if(locked){
     qty=esc(ex.qty||'—');
