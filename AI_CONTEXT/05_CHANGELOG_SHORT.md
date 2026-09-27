@@ -25,3 +25,12 @@
 - 真实浏览器联调（用户实测）：A→B / B→A 双向同步、409 冲突保护、401 错误 Token、网络失败本地保护，全部通过。
 - 自动化：云同步专项 12/12（含 CAS/409/401/网络失败/同步后本地编辑不破坏 CAS）、36℃ 9/9、HTML 内置完整回归 147/147、Worker 单测+集成 20/20。
 - 当前仍为**手动同步**，不做自动双向同步/多用户/D1/Dashboard。
+
+## Cloudflare Pages 测试站（feat/mobile-pages-poc）
+
+- 部署静态目录 `pages/`（index.html 为主 HTML 部署副本）到项目 `baowen-tool`：
+  `https://baowen-tool.pages.dev`；不含 Secret，数据经 Worker/Durable Object 同步。
+- 手机响应式仅加 CSS（≤768px）：头部换行、宽表自身横向滚动、试验管理移动端隐藏次要列、
+  弹窗适配屏幕、触控按钮 40px；不改 55℃/36℃/同步/schemaVersion 逻辑。
+- iPhone Safari 已能打开 Pages 并显示云端数据；桌面自动化 147/147、同步 12/12、36℃ 9/9；
+  响应式最终效果等待用户真实 iPhone 截图验收。

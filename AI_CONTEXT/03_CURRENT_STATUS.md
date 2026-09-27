@@ -26,3 +26,16 @@
 - **代码位置**：Worker `cloud-sync-worker/`（src/index.js + src/cas.js + wrangler.jsonc + test/sync.test.js）；页面 remote adapter 在 `outputs/保温试验排程_V0.6-dev.html`（默认远程地址已接入本 Worker）。
 - **当前仍不做**：自动双向同步、多人协作、D1、Dashboard、通知、正式账号体系、Pages 正式部署。
 - 待实测（业务侧，与同步无关）：真实业务数据下 36℃ 协议确认、Day0/中间节点调整、操作日程、实际 Day0 与周末节点操作；36℃ 周末规则是否最终锁版仍待用户确认。
+
+## Cloudflare Pages 测试站（feat/mobile-pages-poc）
+
+- **已部署**：项目 `baowen-tool`（静态目录 `pages/`，生产分支 main），URL `https://baowen-tool.pages.dev`；
+  `pages/index.html` 是主 HTML 的部署副本（修改主 HTML 后需同步并重新部署）。
+- **手机响应式**（仅 CSS `@media (max-width: 768px)` + 表格包裹，不改业务 JS）：
+  头部可换行、宽表只自身横向滚动（touch）、试验管理移动端隐藏样品批次/计划放入/负责人列（数据保留）、
+  弹窗宽度 ≤100vw−24px 且内部纵向滚动、按钮移动端最小点击高度 40px、防 iOS 聚焦放大。
+- **状态**：iPhone Safari 已能打开 Pages 并显示云端数据（用户实测）；响应式布局已部署，
+  **等待用户再次用真实 iPhone 截图验收**；桌面自动化（Pages 域名）147/147 通过。
+- 使用方式：Mac / iPhone → Pages → 手动同步 → Worker → Durable Object；
+  Pages localStorage 与 file:// 相互独立，首次需从云端拉取。
+- TODO：当 Mac 与手机都统一切换到正式 Pages URL 后，再单独收紧 Worker CORS Origin（当前保留 `*`）。
