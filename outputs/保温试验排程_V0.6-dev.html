@@ -26,6 +26,11 @@ nav{display:flex;gap:4px;}
 .tab-btn.active{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600;}
 .tools{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:var(--muted);}
 .tools button{font-size:13px;}
+.sync-status{display:inline-block;max-width:270px;padding:3px 8px;border:1px solid var(--line);
+  border-radius:6px;background:#fff;color:var(--muted);white-space:normal;line-height:1.35;}
+.sync-status.busy,.sync-status.dirty{background:var(--amber-bg);color:var(--amber);border-color:#e7cf8f;}
+.sync-status.ok{background:var(--green-bg);color:var(--green);border-color:#b7d9bd;}
+.sync-status.err{background:var(--red-bg);color:var(--red);border-color:#f0b9b4;}
 main{padding:16px 20px 40px;max-width:1320px;margin:0 auto;}
 section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;}
 button{background:var(--blue);color:#fff;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:14px;}
@@ -157,6 +162,10 @@ table.planmain tbody tr:not(.row-done):hover{background:#eef4fc;}
       <button class="ghost mini" id="btnExport">导出数据JSON</button>
       <button class="ghost mini" id="btnImport">导入数据JSON</button>
       <input type="file" id="importFile" accept=".json,application/json" style="display:none">
+      <button class="ghost mini" id="btnSyncSettings">同步设置</button>
+      <button class="ghost mini" id="btnSyncUpload">上传到云端</button>
+      <button class="ghost mini" id="btnSyncDownload">从云端拉取</button>
+      <span class="sync-status" id="syncStatus" role="status">同步：正在初始化</span>
     </div>
   </div>
 </header>
@@ -200,7 +209,7 @@ table.planmain tbody tr:not(.row-done):hover{background:#eef4fc;}
 "use strict";
 /* ============================================================
  * 保温试验排程工具 V0.6-dev
- * 纯本地单文件：不联网、不依赖 CDN、不需要服务器/Python。
+ * 本地优先单文件：业务数据仍以 localStorage 为主；云同步 PoC 仅在用户手动操作时联网。
  * V0.4.2 执行流程与状态模型重构：
  *  - 状态由显式确认驱动：本次不做/未放入/进行中/已完成（仅填时间不改变状态）；
  *  - 排程明细行内直接编辑（实际时间/数量/执行人/备注）；
@@ -1385,9 +1394,169 @@ function migrateExecutions(state){
 
 /* ================= 存储层（localStorage） ================= */
 var LS_KEY = "baowen_v04_state_v3";
+var SYNC_META_KEY = "baowen_sync_meta_v1";
+var SYNC_CONFIG_KEY = "baowen_sync_config_v1";
+var SYNC_MOCK_CLOUD_KEY = "baowen_sync_mock_cloud_v1";
+var SYNC_TOKEN_SESSION_KEY = "baowen_sync_token_v1";
 function storageOK(){
   try{ localStorage.setItem("__t","1"); localStorage.removeItem("__t"); return true; }
   catch(e){ return false; }
+}
+function syncNowISO(){ return new Date().toISOString(); }
+function newDeviceId(){
+  if(typeof crypto!=="undefined" && crypto && typeof crypto.getRandomValues==="function"){
+    var bytes=new Uint8Array(12); crypto.getRandomValues(bytes);
+    var hex=""; for(var i=0;i<bytes.length;i++) hex+=pad2(bytes[i].toString(16));
+    return "device-"+hex;
+  }
+  return "device-"+String(nowMs())+"-"+String(typeof performance!=="undefined"?Math.floor(performance.now()*1000):0);
+}
+function defaultSyncMeta(){ return {revision:0,updatedAt:"",deviceId:newDeviceId(),lastSyncAt:"",lastAction:"",lastRemoteDeviceId:""}; }
+function loadSyncMeta(){
+  var m;
+  try{ m=JSON.parse(localStorage.getItem(SYNC_META_KEY)||"null"); }catch(e){ m=null; }
+  if(!m || typeof m!=="object") m=defaultSyncMeta();
+  if(!m.deviceId) m.deviceId=newDeviceId();
+  m.revision=Math.max(0,Math.floor(+m.revision||0));
+  m.updatedAt=String(m.updatedAt||"");
+  m.lastSyncAt=String(m.lastSyncAt||"");
+  m.lastAction=String(m.lastAction||"");
+  m.lastRemoteDeviceId=String(m.lastRemoteDeviceId||"");
+  try{ localStorage.setItem(SYNC_META_KEY,JSON.stringify(m)); }catch(e){}
+  return m;
+}
+function writeSyncMeta(meta){
+  var m=meta||defaultSyncMeta();
+  localStorage.setItem(SYNC_META_KEY,JSON.stringify(m));
+  return m;
+}
+function touchLocalSyncMeta(){
+  var m=loadSyncMeta();
+  m.revision+=1; m.updatedAt=syncNowISO(); m.lastAction="local";
+  writeSyncMeta(m); return m;
+}
+function defaultSyncConfig(){ return {adapter:"mock",endpoint:""}; }
+function loadSyncConfig(){
+  var c;
+  try{ c=JSON.parse(localStorage.getItem(SYNC_CONFIG_KEY)||"null"); }catch(e){ c=null; }
+  if(!c || typeof c!=="object") c=defaultSyncConfig();
+  c.adapter=c.adapter==="remote"?"remote":"mock";
+  c.endpoint=String(c.endpoint||"").trim();
+  return c;
+}
+function saveSyncConfig(config){
+  var c={adapter:config&&config.adapter==="remote"?"remote":"mock",endpoint:String(config&&config.endpoint||"").trim()};
+  localStorage.setItem(SYNC_CONFIG_KEY,JSON.stringify(c)); return c;
+}
+function readSyncToken(){
+  try{ return String(sessionStorage.getItem(SYNC_TOKEN_SESSION_KEY)||""); }catch(e){ return ""; }
+}
+function writeSyncToken(token){
+  try{
+    if(token) sessionStorage.setItem(SYNC_TOKEN_SESSION_KEY,String(token));
+    else sessionStorage.removeItem(SYNC_TOKEN_SESSION_KEY);
+  }catch(e){}
+}
+function stateSnapshotForSync(localState){
+  var snap=JSON.parse(JSON.stringify(localState));
+  delete snap._pendingSave;
+  if(snap.schemaVersion!==6) throw new Error("只允许同步 schemaVersion 6 数据");
+  return snap;
+}
+function validateSyncEnvelope(envelope){
+  if(!envelope || typeof envelope!=="object" || !envelope.metadata || !envelope.state) throw new Error("云端数据格式无效");
+  var meta=envelope.metadata, rev=+meta.revision;
+  if(meta.schemaVersion!==6 || envelope.state.schemaVersion!==6) throw new Error("云端 schemaVersion 不是 6，已拒绝覆盖本地");
+  if(!isFinite(rev) || rev<0 || Math.floor(rev)!==rev) throw new Error("云端 revision 无效");
+  if(!meta.updatedAt || !meta.deviceId) throw new Error("云端 metadata 不完整");
+  return envelope;
+}
+function buildSyncEnvelope(localState,localMeta,revision){
+  var snap=stateSnapshotForSync(localState), timestamp=syncNowISO();
+  return {app:"保温试验排程工具",syncVersion:1,
+    metadata:{schemaVersion:6,revision:revision,updatedAt:timestamp,deviceId:localMeta.deviceId},
+    state:snap};
+}
+function createMockSyncAdapter(storage){
+  var target=storage||localStorage;
+  return {
+    name:"mock",
+    get:function(){
+      var raw=target.getItem(SYNC_MOCK_CLOUD_KEY);
+      return Promise.resolve(raw?validateSyncEnvelope(JSON.parse(raw)):null);
+    },
+    put:function(envelope){
+      validateSyncEnvelope(envelope);
+      target.setItem(SYNC_MOCK_CLOUD_KEY,JSON.stringify(envelope));
+      return Promise.resolve(JSON.parse(JSON.stringify(envelope)));
+    }
+  };
+}
+function createRemoteSyncAdapter(config,fetchImpl,token){
+  var endpoint=String(config&&config.endpoint||"").trim();
+  var request=fetchImpl||(typeof fetch!=="undefined"?fetch:null);
+  function headers(){
+    var h={"Accept":"application/json","Content-Type":"application/json"};
+    if(token) h.Authorization="Bearer "+token;
+    return h;
+  }
+  function call(method,envelope){
+    if(!endpoint) return Promise.reject(new Error("请先填写远程同步地址"));
+    if(!request) return Promise.reject(new Error("当前浏览器不支持网络请求"));
+    return request(endpoint,{method:method,headers:headers(),body:envelope?JSON.stringify(envelope):undefined})
+      .then(function(res){
+        if(method==="GET" && res.status===404) return null;
+        if(!res.ok) throw new Error("同步后端返回 HTTP "+res.status);
+        if(res.status===204) return envelope||null;
+        return res.json();
+      })
+      .then(function(result){ return result?validateSyncEnvelope(result):null; });
+  }
+  return {name:"remote",get:function(){return call("GET");},put:function(envelope){return call("PUT",envelope);}};
+}
+function getSyncAdapter(config){
+  return config.adapter==="remote"
+    ? createRemoteSyncAdapter(config,null,readSyncToken())
+    : createMockSyncAdapter(localStorage);
+}
+function askSyncConfirmation(confirmFn,message){
+  if(!confirmFn) return Promise.resolve(false);
+  try{ return Promise.resolve(!!confirmFn(message)); }
+  catch(e){ return Promise.reject(e); }
+}
+function uploadStateWithAdapter(adapter,localState,localMeta,confirmFn){
+  var snap=stateSnapshotForSync(localState);
+  return adapter.get().then(function(remote){
+    var localRev=+localMeta.revision||0, remoteRev=remote?+remote.metadata.revision:0;
+    var prompt="";
+    if(remote && remoteRev>localRev) prompt="云端 revision "+remoteRev+" 高于本地 "+localRev+"。继续上传会覆盖较新的云端数据，是否继续？";
+    else if(remote && localRev>remoteRev) prompt="本地 revision "+localRev+" 高于云端 "+remoteRev+"。是否确认上传本地版本？";
+    else if(remote && JSON.stringify(remote.state)!==JSON.stringify(snap)) prompt="本地与云端 revision 相同，但内容不同。是否确认用本地数据覆盖云端？";
+    return (prompt?askSyncConfirmation(confirmFn,prompt):Promise.resolve(true)).then(function(allowed){
+      if(!allowed) return {ok:false,cancelled:true,remote:remote};
+      var nextRevision=remote
+        ? (remoteRev>=localRev?remoteRev+1:localRev)
+        : Math.max(1,localRev);
+      var envelope=buildSyncEnvelope(localState,localMeta,nextRevision);
+      return adapter.put(envelope).then(function(saved){
+        return {ok:true,cancelled:false,envelope:saved||envelope,previousRemote:remote};
+      });
+    });
+  });
+}
+function downloadStateWithAdapter(adapter,localState,localMeta,confirmFn){
+  var snap=stateSnapshotForSync(localState);
+  return adapter.get().then(function(remote){
+    if(!remote) throw new Error("云端尚无可拉取的数据");
+    var localRev=+localMeta.revision||0, remoteRev=+remote.metadata.revision;
+    var prompt="";
+    if(remoteRev>localRev) prompt="云端 revision "+remoteRev+" 高于本地 "+localRev+"。拉取后将替换本地业务数据，是否继续？";
+    else if(localRev>remoteRev) prompt="本地 revision "+localRev+" 高于云端 "+remoteRev+"。拉取会丢弃尚未上传的本地修改，是否继续？";
+    else if(JSON.stringify(remote.state)!==JSON.stringify(snap)) prompt="本地与云端 revision 相同，但内容不同。是否确认用云端数据替换本地？";
+    return (prompt?askSyncConfirmation(confirmFn,prompt):Promise.resolve(true)).then(function(allowed){
+      return allowed?{ok:true,cancelled:false,envelope:remote}:{ok:false,cancelled:true,envelope:remote};
+    });
+  });
 }
 /* V0.5.4：schemaVersion=数据结构版本（迁移依据），uiVersion=界面版本，两者互不混用 */
 function defaultState(){ return {version:4, schemaVersion:6, uiVersion:UI_VERSION,
@@ -1413,8 +1582,18 @@ function loadState(){
     return s;
   }catch(e){ return defaultState(); }
 }
-function saveState(){
-  try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); return true; }
+function saveState(options){
+  try{
+    localStorage.setItem(LS_KEY, JSON.stringify(state));
+    if(options&&options.syncedMetadata){
+      var localMeta=loadSyncMeta(), remoteMeta=options.syncedMetadata;
+      writeSyncMeta({revision:+remoteMeta.revision,updatedAt:String(remoteMeta.updatedAt||syncNowISO()),
+        deviceId:localMeta.deviceId,lastSyncAt:syncNowISO(),lastAction:"download",
+        lastRemoteDeviceId:String(remoteMeta.deviceId||"")});
+    }else touchLocalSyncMeta();
+    renderSyncStatus();
+    return true;
+  }
   catch(e){ showToast("保存失败：浏览器本地存储不可用（请使用“导出数据JSON”备份）", true); return false; }
 }
 
@@ -1425,6 +1604,96 @@ var expFilter = "active";    /* active / archived */
 var overdueOpen = true;      /* 操作日程“逾期未处理”折叠区（默认展开） */
 var eventsBound = false;     /* 事件只绑定一次（init 重复调用安全） */
 var modalBound = false;
+var syncBusy = false;
+
+function setSyncStatus(message,kind){
+  if(typeof document==="undefined") return;
+  var el=document.getElementById("syncStatus"); if(!el) return;
+  el.textContent=message; el.className="sync-status"+(kind?" "+kind:"");
+}
+function renderSyncStatus(){
+  if(typeof document==="undefined" || syncBusy) return;
+  var c=loadSyncConfig(), m=loadSyncMeta();
+  var label=c.adapter==="remote"?"远程":"Mock";
+  var last=m.lastSyncAt?("｜上次同步 "+m.lastSyncAt.slice(0,19).replace("T"," ")):"｜尚未同步";
+  var dirty=m.lastAction==="local"&&m.lastSyncAt;
+  setSyncStatus("同步："+label+"｜本地 r"+m.revision+last+(dirty?"｜有未上传修改":""),dirty?"dirty":(m.lastSyncAt?"ok":""));
+}
+function setSyncBusy(busy,message){
+  syncBusy=!!busy;
+  if(typeof document!=="undefined"){
+    var up=document.getElementById("btnSyncUpload"), down=document.getElementById("btnSyncDownload"), settings=document.getElementById("btnSyncSettings");
+    if(up) up.disabled=syncBusy; if(down) down.disabled=syncBusy; if(settings) settings.disabled=syncBusy;
+  }
+  if(syncBusy) setSyncStatus(message||"同步：处理中","busy");
+  else renderSyncStatus();
+}
+function openSyncSettings(){
+  var c=loadSyncConfig(), hasToken=!!readSyncToken();
+  openModal('<h3>手动同步设置（PoC）</h3><div class="egrid">'
+    +'<label>同步适配器<select id="syncAdapterSelect"><option value="mock"'+(c.adapter==="mock"?' selected':'')+'>本机 Mock 云端</option><option value="remote"'+(c.adapter==="remote"?' selected':'')+'>远程 HTTP 后端</option></select></label>'
+    +'<label>远程地址<input id="syncEndpointInput" type="url" value="'+esc(c.endpoint)+'" placeholder="https://example.workers.dev/sync"></label>'
+    +'<label>访问 Token（可选）<input id="syncTokenInput" type="password" autocomplete="off" placeholder="'+(hasToken?'当前会话已设置；留空保持不变':'只保存在当前浏览器会话')+'"></label>'
+    +'<label style="flex-direction:row;align-items:center;margin-top:22px"><input id="syncTokenClear" type="checkbox" style="width:auto"> 清除当前会话 Token</label>'
+    +'</div><div class="hintbox">业务数据始终先保存到本机 localStorage。Mock 只用于本机演练；远程模式仅在点击上传/拉取时请求。Token 不写入 HTML，也不持久化到 localStorage。</div>'
+    +'<div class="m-foot"><button id="syncSettingsSave">保存设置</button><button class="ghost" data-act="closeModal">取消</button></div>');
+  var save=document.getElementById("syncSettingsSave");
+  if(save) save.addEventListener("click",function(){
+    var adapter=document.getElementById("syncAdapterSelect").value;
+    var endpoint=String(document.getElementById("syncEndpointInput").value||"").trim();
+    if(adapter==="remote"){
+      if(!endpoint){ showToast("远程模式必须填写同步地址",true); return; }
+      try{
+        var base=(typeof location!=="undefined"&&location.href)?location.href:"http://localhost/";
+        var parsed=new URL(endpoint,base);
+        if(parsed.protocol!=="http:"&&parsed.protocol!=="https:") throw new Error("protocol");
+        endpoint=parsed.href;
+      }catch(e){ showToast("同步地址必须是有效的 HTTP/HTTPS 地址",true); return; }
+    }
+    saveSyncConfig({adapter:adapter,endpoint:endpoint});
+    var token=String(document.getElementById("syncTokenInput").value||"");
+    if(document.getElementById("syncTokenClear").checked) writeSyncToken("");
+    else if(token) writeSyncToken(token);
+    closeModal(); renderSyncStatus(); showToast("同步设置已保存 ✓");
+  });
+}
+function browserSyncConfirm(message){ return typeof window!=="undefined" && typeof window.confirm==="function" ? window.confirm(message) : false; }
+function uploadToCloud(){
+  if(syncBusy) return;
+  var config=loadSyncConfig(), meta=loadSyncMeta(), adapter=getSyncAdapter(config);
+  setSyncBusy(true,"同步：正在读取云端版本…");
+  uploadStateWithAdapter(adapter,state,meta,browserSyncConfirm).then(function(result){
+    if(result.cancelled){ setSyncBusy(false); showToast("已取消上传，本地与云端均未改动"); return; }
+    var rm=result.envelope.metadata;
+    writeSyncMeta({revision:+rm.revision,updatedAt:String(rm.updatedAt),deviceId:meta.deviceId,
+      lastSyncAt:syncNowISO(),lastAction:"upload",lastRemoteDeviceId:String(rm.deviceId||"")});
+    setSyncBusy(false); setSyncStatus("同步：上传成功｜云端 r"+rm.revision,"ok");
+    showToast("已手动上传到"+(config.adapter==="remote"?"远程后端":"本机 Mock")+" ✓");
+  }).catch(function(error){
+    setSyncBusy(false); setSyncStatus("同步失败："+(error&&error.message?error.message:error),"err");
+    showToast("上传失败，本地数据未受影响："+(error&&error.message?error.message:error),true);
+  });
+}
+function downloadFromCloud(){
+  if(syncBusy) return;
+  var config=loadSyncConfig(), meta=loadSyncMeta(), adapter=getSyncAdapter(config), previousState=state;
+  setSyncBusy(true,"同步：正在检查云端版本…");
+  downloadStateWithAdapter(adapter,state,meta,browserSyncConfirm).then(function(result){
+    if(result.cancelled){ setSyncBusy(false); showToast("已取消拉取，本地数据未改动"); return; }
+    var imported=importJSONString(JSON.stringify(result.envelope.state));
+    if(!imported.ok || imported.state.schemaVersion!==6) throw new Error(imported.error||"云端 state 无法按 schemaVersion 6 载入");
+    state=imported.state;
+    if(!saveState({syncedMetadata:result.envelope.metadata})){
+      state=previousState; throw new Error("云端数据已读取，但本地保存失败");
+    }
+    var ot=document.getElementById("opTime"); if(ot) ot.value=state.opTime||"10:00";
+    renderAll(); setSyncBusy(false); setSyncStatus("同步：拉取成功｜本地 r"+result.envelope.metadata.revision,"ok");
+    showToast("已从"+(config.adapter==="remote"?"远程后端":"本机 Mock")+"拉取并保存 ✓");
+  }).catch(function(error){
+    state=previousState; setSyncBusy(false); setSyncStatus("同步失败："+(error&&error.message?error.message:error),"err");
+    showToast("拉取失败，本地数据未受影响："+(error&&error.message?error.message:error),true);
+  });
+}
 
 /* 存在性检查绑定：元素缺失时跳过，绝不因非核心元素缺失中断整个初始化 */
 function on(id, ev, fn){
@@ -1444,6 +1713,7 @@ function init(){
   bindEvents();
   bindModal();
   renderAll();
+  renderSyncStatus();
   if(!storageOK()) showToast("提示：浏览器本地存储不可用，关闭页面后数据可能丢失（请用导出JSON备份）", true);
 }
 
@@ -1478,6 +1748,9 @@ function bindEvents(){
     if(f) f.click();
   });
   on("importFile", "change", importJSONFile);
+  on("btnSyncSettings", "click", openSyncSettings);
+  on("btnSyncUpload", "click", uploadToCloud);
+  on("btnSyncDownload", "click", downloadFromCloud);
   // 事件委托：试验管理（点击）+ 排程结果（调整计划按钮）+ 操作日程（点击/输入/修改）
   on("expList", "click", onExpClick);
   on("planBody", "click", onPlanClick);
