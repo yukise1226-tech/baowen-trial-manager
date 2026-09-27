@@ -1398,6 +1398,10 @@ var SYNC_META_KEY = "baowen_sync_meta_v1";
 var SYNC_CONFIG_KEY = "baowen_sync_config_v1";
 var SYNC_MOCK_CLOUD_KEY = "baowen_sync_mock_cloud_v1";
 var SYNC_TOKEN_SESSION_KEY = "baowen_sync_token_v1";
+/* V0.6 PoC → 真实 Cloudflare 测试后端：Worker + SQLite-backed Durable Object，
+ * 服务端 revision compare-and-set（不用 Workers KV）。
+ * Token 仍只保存在当前浏览器会话，不写入 HTML/localStorage。 */
+var REMOTE_SYNC_ENDPOINT = "https://baowen-sync.cloud-sync-worker.workers.dev/sync";
 function storageOK(){
   try{ localStorage.setItem("__t","1"); localStorage.removeItem("__t"); return true; }
   catch(e){ return false; }
@@ -1411,13 +1415,16 @@ function newDeviceId(){
   }
   return "device-"+String(nowMs())+"-"+String(typeof performance!=="undefined"?Math.floor(performance.now()*1000):0);
 }
-function defaultSyncMeta(){ return {revision:0,updatedAt:"",deviceId:newDeviceId(),lastSyncAt:"",lastAction:"",lastRemoteDeviceId:""}; }
+function defaultSyncMeta(){ return {revision:0,updatedAt:"",deviceId:newDeviceId(),lastSyncAt:"",lastAction:"",lastRemoteDeviceId:"",syncedRevision:0}; }
 function loadSyncMeta(){
   var m;
   try{ m=JSON.parse(localStorage.getItem(SYNC_META_KEY)||"null"); }catch(e){ m=null; }
   if(!m || typeof m!=="object") m=defaultSyncMeta();
   if(!m.deviceId) m.deviceId=newDeviceId();
   m.revision=Math.max(0,Math.floor(+m.revision||0));
+  /* V0.6 → 真实云端 CAS：syncedRevision=上次成功同步时云端的 revision，
+   * 是服务端 compare-and-set 的 baseRevision；与本地脏计数器 revision 分开。 */
+  m.syncedRevision=Math.max(0,Math.floor(+m.syncedRevision||0));
   m.updatedAt=String(m.updatedAt||"");
   m.lastSyncAt=String(m.lastSyncAt||"");
   m.lastAction=String(m.lastAction||"");
@@ -1427,6 +1434,7 @@ function loadSyncMeta(){
 }
 function writeSyncMeta(meta){
   var m=meta||defaultSyncMeta();
+  m.syncedRevision=Math.max(0,Math.floor(+m.syncedRevision||0));
   localStorage.setItem(SYNC_META_KEY,JSON.stringify(m));
   return m;
 }
@@ -1435,7 +1443,7 @@ function touchLocalSyncMeta(){
   m.revision+=1; m.updatedAt=syncNowISO(); m.lastAction="local";
   writeSyncMeta(m); return m;
 }
-function defaultSyncConfig(){ return {adapter:"mock",endpoint:""}; }
+function defaultSyncConfig(){ return {adapter:"mock",endpoint:REMOTE_SYNC_ENDPOINT}; }
 function loadSyncConfig(){
   var c;
   try{ c=JSON.parse(localStorage.getItem(SYNC_CONFIG_KEY)||"null"); }catch(e){ c=null; }
@@ -1500,19 +1508,50 @@ function createRemoteSyncAdapter(config,fetchImpl,token){
     if(token) h.Authorization="Bearer "+token;
     return h;
   }
-  function call(method,envelope){
+  function call(method,payload){
     if(!endpoint) return Promise.reject(new Error("请先填写远程同步地址"));
     if(!request) return Promise.reject(new Error("当前浏览器不支持网络请求"));
-    return request(endpoint,{method:method,headers:headers(),body:envelope?JSON.stringify(envelope):undefined})
+    return request(endpoint,{method:method,headers:headers(),body:payload!==undefined?JSON.stringify(payload):undefined})
+      .catch(function(error){
+        /* 网络层异常：fetch 未取得 HTTP 响应（断网/域名错误/证书失败等）。
+         * UI 只显示通俗提示；原始错误保留在 console（不吞掉，便于排查）。
+         * 只挂在这个位置：HTTP 401/409/5xx 在后续 .then 中抛出的专门提示不受影响。 */
+        if(typeof console!=="undefined" && console.debug){
+          console.debug("同步网络请求失败（原始错误）", error);
+        }
+        var net = new Error("无法连接远程服务器，本地数据未受影响。");
+        net.cause = error;
+        throw net;
+      })
       .then(function(res){
         if(method==="GET" && res.status===404) return null;
+        if(res.status===401) throw new Error("访问被拒绝（HTTP 401），请检查同步 Token");
+        if(res.status===409){
+          /* 服务端 revision compare-and-set 冲突：云端已有更新，必须先拉取；
+           * 本地数据与云端都不被改动 */
+          return res.json().catch(function(){ return null; }).then(function(meta){
+            throw new Error(meta && meta.revision!==undefined
+              ? "云端已经有更新（当前 revision "+meta.revision+"），请先拉取最新版本。"
+              : "云端已经有更新，请先拉取最新版本。");
+          });
+        }
         if(!res.ok) throw new Error("同步后端返回 HTTP "+res.status);
-        if(res.status===204) return envelope||null;
+        if(res.status===204) return payload||null;
         return res.json();
       })
-      .then(function(result){ return result?validateSyncEnvelope(result):null; });
+      .then(function(result){
+        if(result===null) return null;
+        if(method==="PUT"){
+          /* Worker 返回新 envelope metadata（不含 state，state 已在云端保存） */
+          if(!result || typeof result!=="object" || !isFinite(+result.revision)){
+            throw new Error("同步后端返回无效 metadata");
+          }
+          return {metadata:result};
+        }
+        return validateSyncEnvelope(result);
+      });
   }
-  return {name:"remote",get:function(){return call("GET");},put:function(envelope){return call("PUT",envelope);}};
+  return {name:"remote",get:function(){return call("GET");},put:function(payload){return call("PUT",payload);}};
 }
 function getSyncAdapter(config){
   return config.adapter==="remote"
@@ -1526,6 +1565,18 @@ function askSyncConfirmation(confirmFn,message){
 }
 function uploadStateWithAdapter(adapter,localState,localMeta,confirmFn){
   var snap=stateSnapshotForSync(localState);
+  if(adapter.name==="remote"){
+    /* V0.6 PoC → 真实 Cloudflare（Worker + Durable Object）：服务端 revision compare-and-set。
+     * baseRevision=上次成功同步的云端 revision（syncedRevision，不是本地脏计数器 revision）；
+     * 云端不一致 → HTTP 409，必须先拉取最新版本，绝不静默覆盖；
+     * 新 revision / updatedAt 均由服务端生成。 */
+    var payload={baseRevision:+localMeta.syncedRevision||0, schemaVersion:6,
+      deviceId:localMeta.deviceId, state:snap};
+    return adapter.put(payload).then(function(saved){
+      return {ok:true,cancelled:false,
+        envelope:saved||{metadata:{revision:payload.baseRevision}},previousRemote:null};
+    });
+  }
   return adapter.get().then(function(remote){
     var localRev=+localMeta.revision||0, remoteRev=remote?+remote.metadata.revision:0;
     var prompt="";
@@ -1589,7 +1640,7 @@ function saveState(options){
       var localMeta=loadSyncMeta(), remoteMeta=options.syncedMetadata;
       writeSyncMeta({revision:+remoteMeta.revision,updatedAt:String(remoteMeta.updatedAt||syncNowISO()),
         deviceId:localMeta.deviceId,lastSyncAt:syncNowISO(),lastAction:"download",
-        lastRemoteDeviceId:String(remoteMeta.deviceId||"")});
+        lastRemoteDeviceId:String(remoteMeta.deviceId||""),syncedRevision:+remoteMeta.revision});
     }else touchLocalSyncMeta();
     renderSyncStatus();
     return true;
@@ -1632,10 +1683,10 @@ function openSyncSettings(){
   var c=loadSyncConfig(), hasToken=!!readSyncToken();
   openModal('<h3>手动同步设置（PoC）</h3><div class="egrid">'
     +'<label>同步适配器<select id="syncAdapterSelect"><option value="mock"'+(c.adapter==="mock"?' selected':'')+'>本机 Mock 云端</option><option value="remote"'+(c.adapter==="remote"?' selected':'')+'>远程 HTTP 后端</option></select></label>'
-    +'<label>远程地址<input id="syncEndpointInput" type="url" value="'+esc(c.endpoint)+'" placeholder="https://example.workers.dev/sync"></label>'
+    +'<label>远程地址<input id="syncEndpointInput" type="url" value="'+esc(c.endpoint)+'" placeholder="'+esc(REMOTE_SYNC_ENDPOINT)+'"></label>'
     +'<label>访问 Token（可选）<input id="syncTokenInput" type="password" autocomplete="off" placeholder="'+(hasToken?'当前会话已设置；留空保持不变':'只保存在当前浏览器会话')+'"></label>'
     +'<label style="flex-direction:row;align-items:center;margin-top:22px"><input id="syncTokenClear" type="checkbox" style="width:auto"> 清除当前会话 Token</label>'
-    +'</div><div class="hintbox">业务数据始终先保存到本机 localStorage。Mock 只用于本机演练；远程模式仅在点击上传/拉取时请求。Token 不写入 HTML，也不持久化到 localStorage。</div>'
+    +'</div><div class="hintbox">业务数据始终先保存到本机 localStorage。Mock 只用于本机演练；远程模式仅在点击上传/拉取时请求。Token 不写入 HTML，也不持久化到 localStorage。远程上传由服务端校验版本：云端已有更新时会提示先拉取最新版本。</div>'
     +'<div class="m-foot"><button id="syncSettingsSave">保存设置</button><button class="ghost" data-act="closeModal">取消</button></div>');
   var save=document.getElementById("syncSettingsSave");
   if(save) save.addEventListener("click",function(){
@@ -1666,7 +1717,7 @@ function uploadToCloud(){
     if(result.cancelled){ setSyncBusy(false); showToast("已取消上传，本地与云端均未改动"); return; }
     var rm=result.envelope.metadata;
     writeSyncMeta({revision:+rm.revision,updatedAt:String(rm.updatedAt),deviceId:meta.deviceId,
-      lastSyncAt:syncNowISO(),lastAction:"upload",lastRemoteDeviceId:String(rm.deviceId||"")});
+      lastSyncAt:syncNowISO(),lastAction:"upload",lastRemoteDeviceId:String(rm.deviceId||""),syncedRevision:+rm.revision});
     setSyncBusy(false); setSyncStatus("同步：上传成功｜云端 r"+rm.revision,"ok");
     showToast("已手动上传到"+(config.adapter==="remote"?"远程后端":"本机 Mock")+" ✓");
   }).catch(function(error){

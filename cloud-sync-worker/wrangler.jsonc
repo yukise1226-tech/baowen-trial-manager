@@ -1,0 +1,24 @@
+// 保温试验排程工具 —— 手动云同步 Worker（SQLite-backed Durable Object）
+// Secret（SYNC_TOKEN）不写在这里：本地开发用 .dev.vars（已 gitignore），
+// 线上用 `npx wrangler secret put SYNC_TOKEN`。
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "baowen-sync",
+  "main": "src/index.js",
+  "account_id": "e0ca3acebd6d620b54e28e25e15b3c92",
+  "compatibility_date": "2026-09-15",
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SyncStore"]
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SYNC_STORE",
+        "class_name": "SyncStore"
+      }
+    ]
+  }
+}

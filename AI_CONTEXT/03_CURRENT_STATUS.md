@@ -7,13 +7,22 @@
 - 36℃：V0.6-dev，开发测试中；主 HTML 已有独立 `protocol36`、任务模型和 `schemaVersion: 6`。
 - 当前 Git 分支：`feat/cloud-sync-poc`；分支基线业务提交：`bb1444e`。`main` 停在初始快照 `87afe5e`；本包自身提交以仓库 `git log -1` 为准。
 - `v0.5.4.1-stable` tag：**未创建**；没有可可靠定位的历史稳定提交，不得给现有 V0.6-dev 提交误打该 tag。
-- 最近一次主题：手动云同步 PoC；业务 state 仍以 localStorage 为主，整份 `schemaVersion: 6` state 通过可切换的 Mock/HTTP remote adapter 上传与拉取，同步 metadata 单独记录 `schemaVersion`、`revision`、`updatedAt`、`deviceId`。
-- 冲突策略：revision 不一致或同 revision 内容不一致时必须显式确认，不静默覆盖；远程 Token 仅保存在当前浏览器会话，不写入 HTML/localStorage。
-- 自动测试：`tests/test_cloud_sync_poc.js` 8 通过、0 失败；`tests/test_36c_single_insertion.js` 9 通过、0 失败；真实 Chrome 运行 HTML 内置自测 147 通过、0 失败。
-- 真实浏览器同步回测：HTTP remote 上传成功；刷新后本地数据、adapter 设置和 revision 保留；远程拉取成功；模拟 HTTP 503 时明确提示失败，原本地数据仍在。
-- Cloudflare：**尚未真正连接**。仓库内没有可复用的 Wrangler/Worker/KV 配置，当前只用 `tests/mock_sync_server.js` 验证 HTTP 契约；未猜测账号、命名空间或 Token。
-- 待实测：真实业务数据下创建36℃项目、确认协议、调整 Day0/中间节点、操作日程、实际 Day0，以及周末节点实际操作决定；另需 Cloudflare Worker 项目、KV namespace 与认证 secret 后才可做真实云端联调。
-- 36℃周末规则当前按历史/SOP 顺延至周一；是否最终锁为稳定版规则仍待用户确认，勿擅自改算法。
-- 当前不做：Pages 正式部署、自动双向同步、多人协作、D1、Dashboard、通知、55℃重构、拆分 HTML、升级稳定版。
 
-路径、文件名与可迁移说明见 `08_FILE_MAP.md`；历史版本变化见 `05_CHANGELOG_SHORT.md`。
+## Cloudflare 云同步 PoC：已完成真实后端联调
+
+- **后端**：Cloudflare Worker + SQLite-backed Durable Object（固定 name=`primary` 保存整份同步 envelope，服务端 revision compare-and-set；不使用 Workers KV 做 revision 判断）。
+- **Worker**：`https://baowen-sync.cloud-sync-worker.workers.dev`
+- **同步接口**：`https://baowen-sync.cloud-sync-worker.workers.dev/sync`
+- **认证**：`SYNC_TOKEN` Secret 已通过 `wrangler secret` 配置（**绝对不要记录实际值**）；页面 Token 只保存在浏览器当前会话（sessionStorage），不写入 HTML/localStorage。
+- **已验证（真实浏览器联调，用户实测）**：
+  - A↔B 双向同步（Safari A → Cloudflare → Chrome B 与反向均通过，55℃/36℃/执行记录完整）；
+  - revision 409 冲突保护（旧 revision 上传被拒，页面提示“云端已经有更新……请先拉取最新版本。”，双方数据均未被覆盖）；
+  - 401 认证失败保护（错误 Token 被拒，本地数据未受影响）；
+  - 网络失败保护（错误地址/断网时提示“无法连接远程服务器，本地数据未受影响。”，原始错误保留在 console）；
+  - localStorage 本地兜底（任何远程失败都不自动覆盖本地数据）；
+  - schemaVersion 6 数据完整。
+- **当前同步模式**：手动上传 / 手动拉取。
+- **同步契约**：PUT body `{baseRevision, schemaVersion:6, deviceId, state}`；服务端一致则 `revision+1`（updatedAt 服务端生成）并保存整份 state；不一致返回 409 + 当前 metadata；GET 返回完整 envelope（空云端 404）。客户端用 `syncedRevision`（上次成功同步的云端 revision）作为 CAS 基准，与本地脏计数器 `revision` 分开。
+- **代码位置**：Worker `cloud-sync-worker/`（src/index.js + src/cas.js + wrangler.jsonc + test/sync.test.js）；页面 remote adapter 在 `outputs/保温试验排程_V0.6-dev.html`（默认远程地址已接入本 Worker）。
+- **当前仍不做**：自动双向同步、多人协作、D1、Dashboard、通知、正式账号体系、Pages 正式部署。
+- 待实测（业务侧，与同步无关）：真实业务数据下 36℃ 协议确认、Day0/中间节点调整、操作日程、实际 Day0 与周末节点操作；36℃ 周末规则是否最终锁版仍待用户确认。

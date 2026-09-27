@@ -70,27 +70,32 @@ async function test(id, name, fn) {
 }
 
 (async () => {
-  const mock = createMockSyncServer();
+  const TOKEN = 'session-only-test-token';
+  const mock = createMockSyncServer({token: TOKEN});
   const address = await mock.listen();
   const endpoint = `http://${address.address}:${address.port}/sync`;
-  const adapter = app.createRemoteSyncAdapter({endpoint}, fetch, 'session-only-test-token');
+  const adapter = app.createRemoteSyncAdapter({endpoint}, fetch, TOKEN);
 
   let stateA = fixtureState();
-  let metaA = {revision: 1, updatedAt: '2026-09-27T00:00:00.000Z', deviceId: 'device-A'};
+  let metaA = {revision: 0, syncedRevision: 0, updatedAt: '', deviceId: 'device-A'};
   let stateB = fixtureState();
   stateB.experiments = [];
   stateB.executions = {};
-  let metaB = {revision: 0, updatedAt: '', deviceId: 'device-B'};
+  let metaB = {revision: 0, syncedRevision: 0, updatedAt: '', deviceId: 'device-B'};
 
-  await test('SYNC-01', 'A 上传整份 schemaVersion 6 state，云端带完整 metadata', async () => {
+  await test('SYNC-01', 'A 首次上传（baseRevision=0）→ 服务端 revision 1 + 完整 metadata，云端保存整份 state', async () => {
     const result = await app.uploadStateWithAdapter(adapter, stateA, metaA, () => true);
     assert.equal(result.ok, true);
     assert.equal(result.envelope.metadata.schemaVersion, 6);
     assert.equal(result.envelope.metadata.revision, 1);
     assert.equal(result.envelope.metadata.deviceId, 'device-A');
     assert.ok(result.envelope.metadata.updatedAt);
-    assert.equal(result.envelope.state.experiments.length, 2);
-    assert.equal(mock.getEnvelope().state.schemaVersion, 6);
+    metaA.revision = 1;
+    metaA.syncedRevision = 1;
+    const cloud = mock.getEnvelope();
+    assert.equal(cloud.metadata.revision, 1);
+    assert.equal(cloud.state.schemaVersion, 6);
+    assert.equal(cloud.state.experiments.length, 2);
   });
 
   await test('SYNC-02', 'B 拉取 A 数据，远端较新时先确认并完整保留 55℃/36℃', async () => {
@@ -98,20 +103,21 @@ async function test(id, name, fn) {
     const result = await app.downloadStateWithAdapter(adapter, stateB, metaB, message => { prompt = message; return true; });
     assert.match(prompt, /云端 revision 1 高于本地 0/);
     stateB = result.envelope.state;
-    metaB = {revision: result.envelope.metadata.revision, updatedAt: result.envelope.metadata.updatedAt, deviceId: 'device-B'};
+    metaB = {revision: result.envelope.metadata.revision, syncedRevision: result.envelope.metadata.revision,
+      updatedAt: result.envelope.metadata.updatedAt, deviceId: 'device-B'};
     assert.equal(stateB.schemaVersion, 6);
     assert.equal(stateB.experiments.find(item => item.id === 'E55').condition, '55±1℃');
     assert.equal(stateB.experiments.find(item => item.id === 'E36').protocol36.totalDays, 60);
   });
 
-  await test('SYNC-03', 'B 修改 Day14 后上传；本地较新时先确认', async () => {
+  await test('SYNC-03', 'B 修改 Day14 后上传（baseRevision=1）→ 服务端 revision 2（CAS 模式无覆盖确认弹窗）', async () => {
     stateB.executions['E36|36|sensory-14'].adjustedPlanTime = '2026-10-22T09:00';
-    metaB.revision = 2;
     let prompt = '';
     const result = await app.uploadStateWithAdapter(adapter, stateB, metaB, message => { prompt = message; return true; });
-    assert.match(prompt, /本地 revision 2 高于云端 1/);
+    assert.equal(prompt, '');
     assert.equal(result.envelope.metadata.revision, 2);
     assert.equal(result.envelope.metadata.deviceId, 'device-B');
+    assert.equal(mock.getEnvelope().state.executions['E36|36|sensory-14'].adjustedPlanTime, '2026-10-22T09:00');
   });
 
   await test('SYNC-04', 'A 拉回 B 的 Day14 修改', async () => {
@@ -120,6 +126,7 @@ async function test(id, name, fn) {
     assert.match(prompt, /云端 revision 2 高于本地 1/);
     stateA = result.envelope.state;
     metaA.revision = result.envelope.metadata.revision;
+    metaA.syncedRevision = result.envelope.metadata.revision;
     assert.equal(stateA.executions['E36|36|sensory-14'].adjustedPlanTime, '2026-10-22T09:00');
     assert.equal(stateA.schemaVersion, 6);
   });
@@ -134,13 +141,16 @@ async function test(id, name, fn) {
     assert.equal(app.loadSyncMeta().revision, 2);
   });
 
-  await test('SYNC-06', '冲突被取消时不覆盖云端', async () => {
+  await test('SYNC-06', '旧 revision 上传 → 409：云端不被覆盖，页面提示先拉取最新版本', async () => {
     const before = JSON.stringify(mock.getEnvelope());
-    const conflict = fixtureState();
-    conflict.experiments[0].note = '不得上传';
-    const result = await app.uploadStateWithAdapter(adapter, conflict, {revision: 1, deviceId: 'device-C'}, () => false);
-    assert.equal(result.cancelled, true);
+    const stale = fixtureState();
+    stale.experiments[0].note = '不得上传';
+    await assert.rejects(
+      () => app.uploadStateWithAdapter(adapter, stale, {revision: 1, syncedRevision: 1, deviceId: 'device-C'}, () => true),
+      /云端已经有更新（当前 revision 2），请先拉取最新版本/
+    );
     assert.equal(JSON.stringify(mock.getEnvelope()), before);
+    assert.equal(mock.getEnvelope().metadata.revision, 2);
   });
 
   await test('SYNC-07', '后端失败不改变本地 state 或 revision', async () => {
@@ -163,8 +173,44 @@ async function test(id, name, fn) {
     assert.equal(back.state.experiments.length, 2);
   });
 
+  await test('SYNC-09', '错误 Token → 401 且云端与本地均不受影响', async () => {
+    const wrong = app.createRemoteSyncAdapter({endpoint}, fetch, 'wrong-token');
+    await assert.rejects(() => wrong.get(), /401/);
+    await assert.rejects(
+      () => app.uploadStateWithAdapter(wrong, stateA, {revision: 2, syncedRevision: 2, deviceId: 'device-A'}, () => true),
+      /401/
+    );
+    assert.equal(mock.getEnvelope().metadata.revision, 2);
+  });
+
+  await test('SYNC-10', '无 Token（未授权）→ 401', async () => {
+    const noToken = app.createRemoteSyncAdapter({endpoint}, fetch, '');
+    await assert.rejects(() => noToken.get(), /401/);
+  });
+
+  await test('SYNC-11', '同步后的本地编辑（脏计数+1）不影响 CAS：上传仍用 syncedRevision → 服务端 revision 3', async () => {
+    metaA.revision += 1;                    // 本地脏计数：仅代表“有未上传修改”
+    assert.equal(metaA.syncedRevision, 2);  // CAS 基准仍是上次同步的云端 revision
+    const result = await app.uploadStateWithAdapter(adapter, stateA, metaA, () => true);
+    assert.equal(result.ok, true);
+    assert.equal(result.envelope.metadata.revision, 3);
+    assert.equal(mock.getEnvelope().metadata.revision, 3);
+  });
+
+  await test('SYNC-12', '网络不可达（fetch 无 HTTP 响应）→ 通俗提示，不暴露底层错误', async () => {
+    const unreachable = app.createRemoteSyncAdapter({endpoint: 'http://127.0.0.1:1/sync'}, fetch, TOKEN);
+    await assert.rejects(
+      () => app.downloadStateWithAdapter(unreachable, stateA, metaA, () => true),
+      /无法连接远程服务器，本地数据未受影响/
+    );
+    await assert.rejects(
+      () => app.uploadStateWithAdapter(unreachable, stateA, metaA, () => true),
+      /无法连接远程服务器，本地数据未受影响/
+    );
+  });
+
   await mock.close();
-  console.log(`SYNC: ${passed} PASS, ${8 - passed} FAIL`);
+  console.log(`SYNC: ${passed} PASS, ${12 - passed} FAIL`);
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;
