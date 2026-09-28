@@ -78,14 +78,14 @@ test('LEGACY-03', '同一天生产+放入不报错', () => {
   assert.equal(list.length, 0);
 });
 
-test('LEGACY-04', '旧 adjustedPlanPutin 早于 originalPlanPutin 被检测', () => {
+test('LEGACY-04', 'prodDate<=adjustedPlanPutin<originalPlanPutin 不再被当作异常', () => {
   const state = stateWith([3], {prodDate: '2026-09-20'});   /* 生产 09-20，原计划 09-22 */
   state.executions[app.exKey('E55', 3)] = app.cleanExecution({adjustedPlanPutin: '2026-09-21T10:00'});
-  const a = anomalies(state).find(item => item.type === 'legacy-advance-adjustment' && item.day === 3);
-  assert.ok(a);
-  assert.equal(a.fix, 'plan-reset');
-  assert.match(a.currentText, /09-21 10:00/);
-  assert.match(a.currentText, /09-22 10:00/);
+  /* 09-21 晚于生产日期，取出 09-24 可操作 → 无异常（任务09.1：提前本身不是错误） */
+  assert.equal(anomalies(state).filter(a => a.day === 3).length, 0);
+  /* 早于生产日期的调整仍被识别（生产日期是唯一时间边界） */
+  state.executions[app.exKey('E55', 3)] = app.cleanExecution({adjustedPlanPutin: '2026-09-19T10:00'});
+  assert.ok(anomalies(state).some(a => a.type === 'plan-putin-before-prod' && a.day === 3));
 });
 
 test('LEGACY-05', '旧计划 takeout 落 holiday 且节点未执行，被检测', () => {

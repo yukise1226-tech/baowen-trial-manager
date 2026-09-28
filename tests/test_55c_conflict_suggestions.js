@@ -26,7 +26,7 @@ function rowAt(putin, day, expId = 'ROW') {
 }
 function exp55() {
   return app.cleanExperiment({
-    id: 'E55', no: '55-CLASSIC', project: '经典55℃案例', batch: 'B1', prodDate: '2026-09-20',
+    id: 'E55', no: '55-CLASSIC', project: '经典55℃案例', batch: 'B1', prodDate: '2026-09-22',
     putinDate: '2026-09-22', months: 12, condition: '55±1℃', planTime: '10:00',
     targetConfirmed: true, targetDays: [1,2,3,4,5,6,7,8,9,10,11,12,13,14]
   });

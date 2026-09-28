@@ -16,7 +16,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 function exp55(days = [1,2,3,4,5,6,7,8,9,10,11,12,13,14]) {
   return app.cleanExperiment({
-    id: 'E55', no: '55-CLASSIC', project: '经典55℃案例', batch: 'B1', prodDate: '2026-09-20',
+    id: 'E55', no: '55-CLASSIC', project: '经典55℃案例', batch: 'B1', prodDate: '2026-09-22',
     putinDate: '2026-09-22', months: 12, condition: '55±1℃', planTime: '10:00',
     targetMode: 'custom', targetConfirmed: true, targetDays: days
   });
@@ -87,16 +87,16 @@ test('DELAY-04', '所有候选 candidatePutin >= effectivePlanPutin', () => {
   }
 });
 
-test('DELAY-05', '已存在 adjustedPlanPutin 时，新候选不得早于该 adjustedPlanPutin', () => {
-  const state = classicState();
-  /* Day3 人为调整到 09-23（取出 09-26 仍冲突），后续候选必须 >= 09-23 */
+test('DELAY-05', '已存在 adjustedPlanPutin 时，候选不早于生产日期（时间边界只有生产日期）', () => {
+  const state = classicState();   /* prodDate = putinDate = 09-22 */
+  /* Day3 人为调整到 09-23（取出 09-26 仍冲突），候选必须 >= 生产日期 09-22 */
   state.executions[app.exKey('E55', 3)] = app.cleanExecution({adjustedPlanPutin: '2026-09-23T10:00'});
   const row = rowOf(state, 3);
   assert.equal(app.fmtDT(row.effectivePlanPutin), '2026-09-23 10:00');
   const candidates = app.build55ConflictSummary(row, state).candidates;
   assert.ok(candidates.length > 0);
   for (const candidate of candidates) {
-    assert.ok(candidate.putin.getTime() >= row.effectivePlanPutin.getTime());
+    assert.ok(app.ymdOf(candidate.putin) >= '2026-09-22');
   }
 });
 
@@ -148,7 +148,7 @@ test('DELAY-10', 'validate/apply 拒绝包含早于当前计划时间的旧方�
   };
   const checked = app.validate55GroupedSuggestionPlanForApply(state, 'E55', stalePlan);
   assert.equal(checked.ok, false);
-  assert.match(checked.error, /早于当前有效计划/);
+  assert.match(checked.error, /早于生产日期/);
   const before = JSON.stringify(state.executions);
   const applied = app.apply55GroupedSuggestionPlan(state, 'E55', stalePlan);
   assert.equal(applied.ok, false);

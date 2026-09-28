@@ -14,7 +14,7 @@ vm.runInContext(match[1], app, {filename: htmlPath});
 function date(value) { return app.parseDateTime(value); }
 function exp55(days = [1,2,3,4,5,6,7,8,9,10,11,12,13,14]) {
   return app.cleanExperiment({
-    id: 'E55', no: '55-CLASSIC', project: '经典55℃案例', batch: 'B1', prodDate: '2026-09-20',
+    id: 'E55', no: '55-CLASSIC', project: '经典55℃案例', batch: 'B1', prodDate: '2026-09-22',
     putinDate: '2026-09-22', months: 12, condition: '55±1℃', planTime: '10:00',
     targetMode: 'custom', targetConfirmed: true, targetDays: days
   });
@@ -193,13 +193,13 @@ test('GROUP-15', '操作日程展示联合建议、分组时间与总批次数�
   const state = classicState();
   const day3 = app.computeSchedule(state).rows.find(row => row.day === 3);
   const markup = app.operation55SuggestionHTML(day3, state, day3.effectivePlanTakeout);
-  assert.match(markup, /联合建议｜推荐：延后集中/);
+  assert.match(markup, /联合建议｜推荐：尽早完成/);
   assert.match(markup, /预计最终完成：2026-10-12 10:00/);
   assert.match(markup, /Day14 完成：2026-10-08 10:00/);
   assert.match(markup, /放入批次：4/);
   assert.match(markup, /Day9、Day13/);
   assert.match(markup, /Day10、Day11、Day12/);
-  assert.match(markup, /总延后 47 天/);
+  assert.match(markup, /总偏移 47 天/);
   /* 任务08：出现“采用推荐方案”按钮，但只打开确认弹窗（groupedApplyOpen），不直接写 state */
   assert.match(markup, /采用推荐方案/);
   assert.match(markup, /data-act="groupedApplyOpen"/);
