@@ -8,7 +8,7 @@
 - 当前 Git 分支：`dev-v0.7`；从 `dev-v0.6` 继续开发，未合并 `main`；本包自身提交以仓库 `git log -1` 为准。
 - `v0.5.4.1-stable` tag：**未创建**；没有可可靠定位的历史稳定提交，不得给现有 V0.6-dev 提交误打该 tag。
 
-## V0.7 统一日期规则：任务01～08.3已完成
+## V0.7 统一日期规则：任务01～08.4已完成
 
 - 已有 `customSkipDates`、`holidayDates`、`workdayOverrides`、2026 中国官方节假日 provider 与 `isOperationDateAvailable()`。
 - `operationDateStatus()` 已按计划操作时间返回 `available`、`reason`、`date` 及官方日历覆盖状态；`customSkipDates` 优先级最高，调休上班日覆盖普通周末。
@@ -19,6 +19,7 @@
 - 任务08.1已完成：修正建议入口触发条件——未确认放入节点按 `build55ConflictSummary` 完整结果判断（放入或取出任一不可操作即显示冲突提示与调整建议，不再只检查当前显示的放入时间）；待放入行内联提示对应计划取出日期的冲突；排程页新增试验级冲突摘要（“当前计划存在 N 个不可操作日冲突：Day…”，【查看联合调整建议】复用任务08确认采用流程，不建第二套算法）。
 - 任务08.2已完成：修复采用入口事件绑定——抽出共享入口 `open55GroupedApplyFromTrigger(t)`（重算→签名校验→全量校验→打开确认弹窗），排程页/操作日程/弹窗三处 `groupedApplyOpen` 统一走该 helper（在 `day===null` 拦截之前处理）；`groupedApplyYes` 仍在弹窗内独立处理。未动联合建议算法、validate/apply 逻辑与各协议。
 - 任务08.3已完成：55℃调整禁止提前放入——候选生成源头 `suggest55ConflictAlternatives` 只向后搜索（offsetDays>0）；Day<7 改为最早合法后移，Day>=7 窗口内仅后移并优先减少批次；联合建议改名为“延后集中”。`validate55GroupedSuggestionPlanForApply` 新增第二道防线：推荐放入早于该节点当前有效计划即整组拒绝。scheduleBatches、实际时间、36℃、schemaVersion、云同步协议均未动。
+- 任务08.4已完成：55℃“进行中但未完成”节点可安全恢复为未放入——纯 helper `collect55RestorablePutinDays` / `apply55RestoreUnfinishedPutins`（先全量校验、原子执行、已完成节点混入即整组拒绝），复用既有 `undoPutinRecord` 语义（putinConfirmed=false、putinTime 清空、adjustedExpectedTakeout 清空；person/note/adjustedPlanPutin 保留）。排程页新增试验级【批量恢复未完成的确认放入】入口（确认弹窗列节点/清空项/保留项）；单节点撤销放入沿用现有操作日程入口。恢复后节点回到未放入，可继续调整计划、重新进入联合建议与采用流程。不做自动迁移、不按版本猜测测试数据、36℃/schemaVersion/云同步协议不变。
 
 ## Cloudflare 云同步 PoC：已完成真实后端联调
 

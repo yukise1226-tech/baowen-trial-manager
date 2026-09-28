@@ -1025,6 +1025,68 @@ function exp55ConflictSummaryHTML(item, targetState){
     +'<button class="mini" data-act="groupedApplyOpen" data-id="'+esc(item.exp.id)+'" data-sig="'+esc(grouped55PlanSignature(plan))+'">查看联合调整建议</button>'
     +'</div>';
 }
+/* 任务08.4：收集该试验“进行中但未完成”（putinConfirmed=true 且 completeConfirmed!=true）的 Day。
+ * 只读；已完成节点绝不进入；36℃键（含 "|36|"）天然被 key 结构排除。 */
+function collect55RestorablePutinDays(targetState, expId){
+  var days=[];
+  if(!targetState || typeof targetState!=="object" || !targetState.executions) return days;
+  for(var key in targetState.executions){
+    var ex=targetState.executions[key];
+    if(!ex || typeof ex!=="object") continue;
+    var parts=String(key).split("|");
+    if(parts.length!==2 || parts[0]!==expId) continue;
+    var day=+parts[1];
+    if(!isFinite(day) || day<1) continue;
+    if(ex.putinConfirmed===true && ex.completeConfirmed!==true) days.push(day);
+  }
+  days.sort(function(a,b){ return a-b; });
+  return days;
+}
+/* 任务08.4：原子批量恢复“进行中未完成”节点为未放入——先全量校验，任一不满足一个都不改。
+ * 复用 undoPutinRecord：putinConfirmed=false、putinTime=""、adjustedExpectedTakeout 清空；
+ * person/note/adjustedPlanPutin 等保留；已完成节点混入即整组拒绝。 */
+function apply55RestoreUnfinishedPutins(targetState, expId, days){
+  if(!targetState || typeof targetState!=="object") return {ok:false,error:"状态无效，无法恢复。"};
+  var list=Array.isArray(days)?days:[];
+  if(!list.length) return {ok:false,error:"没有需要恢复的节点。"};
+  var seen={}, targets=[];
+  for(var i=0;i<list.length;i++){
+    var day=+list[i];
+    if(!isFinite(day) || day<1) return {ok:false,error:"包含无效 Day，未恢复。"};
+    if(seen[day]) return {ok:false,error:"Day 列表重复，未恢复。"};
+    seen[day]=true;
+    var ex=targetState.executions[exKey(expId,day)];
+    if(!ex || typeof ex!=="object" || ex.putinConfirmed!==true) return {ok:false,error:"Day"+day+" 尚未确认放入，未恢复。"};
+    if(ex.completeConfirmed===true) return {ok:false,error:"Day"+day+" 已完成，不能直接恢复为未放入（请先撤销完成），整组未恢复。"};
+    targets.push({day:day,ex:ex});
+  }
+  for(var t=0;t<targets.length;t++){
+    undoPutinRecord(targets[t].ex);
+    targetState.executions[exKey(expId,targets[t].day)]=targets[t].ex;
+  }
+  return {ok:true,restored:targets.length,days:targets.map(function(t){ return t.day; })};
+}
+/* 恢复确认弹窗：明确列出节点、清空项与保留项；确认才执行。 */
+function restore55UnfinishedConfirmHTML(exp, days){
+  var daysTxt=days.map(function(d){ return "Day"+d; }).join("、");
+  return '<h3>批量恢复未完成的确认放入</h3><div class="confirmbox">'
+    +'将以下节点恢复为未放入：<br><b>'+esc(daysTxt)+'</b></div>'
+    +'<div class="confirmbox">实际放入时间将清空。<br>计划调整、执行人、备注保留。<br>已完成节点不会处理。</div>'
+    +'<div class="m-foot">'
+    +'<button data-act="restoreUnfinishedYes" data-id="'+esc(exp.id)+'" data-days="'+esc(days.join(","))+'">确认恢复</button>'
+    +'<button class="ghost" data-act="closeModal">取消</button></div>';
+}
+/* 任务08.4：55℃排程区块的试验级恢复入口——仅当存在“进行中未完成”节点时显示。 */
+function exp55RestoreUnfinishedHTML(item, targetState){
+  if(!item || item.kind!=="ok" || !item.exp || item.exp.condition==="36±1℃") return "";
+  var days=collect55RestorablePutinDays(targetState, item.exp.id);
+  if(!days.length) return "";
+  var daysTxt=days.map(function(d){ return "Day"+d; }).join("、");
+  return '<div class="operation-date-note" style="display:block;margin:6px 0">'
+    +'有 '+days.length+' 个进行中未完成节点（'+esc(daysTxt)+'）'
+    +'<button class="mini" data-act="restoreUnfinishedOpen" data-id="'+esc(item.exp.id)+'" data-days="'+esc(days.join(","))+'">批量恢复未完成的确认放入</button>'
+    +'</div>';
+}
 /* 任务08.2：plan / today / modal 三处共用的“采用推荐方案”触发入口。
  * 按当前 state 重算推荐方案 → 签名校验 → 全量校验 → 打开确认弹窗（任务08流程）。 */
 function open55GroupedApplyFromTrigger(t){
@@ -3162,6 +3224,29 @@ function onModalClick(ev){
     showToast("已采用推荐方案：调整 "+resultYes.changes.length+" 个节点 ✓");
     return;
   }
+  if(act==="restoreUnfinishedOpen"){
+    /* 任务08.4：打开恢复确认弹窗前按当前 state 重收集，状态已变化则拒绝 */
+    var freshOpen=collect55RestorablePutinDays(state,exp.id);
+    var openDays=t.getAttribute("data-days")||"";
+    if(!freshOpen.length || freshOpen.join(",")!==openDays){
+      showToast("节点状态已变化，请重新查看。", true); return;
+    }
+    openModal(restore55UnfinishedConfirmHTML(exp, freshOpen));
+    return;
+  }
+  if(act==="restoreUnfinishedYes"){
+    /* 确认恢复：再次重收集并全量校验，全部合法才一次性执行 */
+    var freshYes=collect55RestorablePutinDays(state,exp.id);
+    var yesDays=t.getAttribute("data-days")||"";
+    if(!freshYes.length || freshYes.join(",")!==yesDays){
+      showToast("节点状态已变化，请重新查看。", true); return;
+    }
+    var resultR=apply55RestoreUnfinishedPutins(state,exp.id,freshYes);
+    if(!resultR.ok){ showToast(resultR.error, true); return; }
+    saveState(); closeModal(); renderCurrent();
+    showToast("已恢复 "+resultR.restored+" 个节点为未放入 ✓");
+    return;
+  }
   if(day!==null && act==="nodeSave"){
     /* 保存编辑当前节点（V0.5.4）：实际放入/预计取出/执行人/备注一次性保存；
      * 标准目标 = 新实际放入 + Day×24h 自动重算；预计取出仍跟随旧标准目标 → 视为未人工调整
@@ -3519,6 +3604,8 @@ function planHTML(sch, st){
       }
       /* 任务08.1：试验级冲突摘要（未放入冲突节点数量与 Day 列表 + 联合调整建议入口） */
       html += exp55ConflictSummaryHTML(it, st);
+      /* 任务08.4：试验级“批量恢复未完成的确认放入”入口（仅存在进行中未完成节点时显示） */
+      html += exp55RestoreUnfinishedHTML(it, st);
       /* 批次摘要（V0.5.4：标题“待放入批次”，只列仍未放入的节点）：一行一个批次 */
       if(it.batches.length){
         html += '<div class="batlines"><div class="batch-title">待放入批次</div>';
