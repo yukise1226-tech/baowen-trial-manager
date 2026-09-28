@@ -927,12 +927,82 @@ function operation55SuggestionHTML(row, targetState, conflictTime){
     ? build55GroupedConflictSuggestions(rows55ForGroupedSuggestion(row,targetState),targetState,{expId:row.expId}) : null;
   if(grouped){
     html+=operation55GroupedPlanHTML(grouped,'联合建议｜推荐：节前优先集中');
+    /* 任务08：仅当当前联合方案全部节点仍满足应用条件时提供采用入口；
+     * 点击只打开确认弹窗，绝不直接写 state。 */
+    if(validate55GroupedSuggestionPlanForApply(targetState,row.expId,grouped).ok){
+      html+='<div style="margin-top:6px"><button class="mini" data-act="groupedApplyOpen" data-id="'+esc(row.expId)+'" data-sig="'+esc(grouped55PlanSignature(grouped))+'">采用推荐方案</button></div>';
+    }
     if(grouped.alternatives&&grouped.alternatives.length){
       html+='<details class="operation-suggestion-joint-alt"><summary>联合建议备选：最小总偏移</summary>'
         +operation55GroupedPlanHTML(grouped.alternatives[0],'备选方案｜最小总偏移')+'</details>';
     }
   }
   return html+'</div></details>';
+}
+/* 任务08：55℃联合建议人工确认采用。A. validate 只读校验当前 state 下的应用资格（原子：
+ * 任一节点不满足则整组拒绝）；B. apply 校验通过后一次性写入 adjustedPlanPutin。
+ * 只写计划放入时间；取出继续由 放入+Day×24h 自动推导；绝不写事实字段与确认状态。 */
+function validate55GroupedSuggestionPlanForApply(targetState, expId, plan){
+  if(!targetState || typeof targetState!=="object") return {ok:false,error:"状态无效，无法采用推荐方案。"};
+  if(!plan || !Array.isArray(plan.groups) || !plan.groups.length) return {ok:false,error:"当前没有可应用的推荐方案。"};
+  var rows=computeSchedule(targetState).rows, changes=[], seen={};
+  for(var g=0;g<plan.groups.length;g++){
+    var group=plan.groups[g];
+    if(!(group.putin instanceof Date) || isNaN(group.putin.getTime())) return {ok:false,error:"推荐方案包含无效放入时间，未采用。"};
+    for(var d=0;d<group.days.length;d++){
+      var day=+group.days[d], takeout=group.takeouts[d];
+      if(!isFinite(day) || day<0) return {ok:false,error:"推荐方案包含无效 Day，未采用。"};
+      if(!(takeout instanceof Date) || isNaN(takeout.getTime())) return {ok:false,error:"推荐方案包含无效取出时间，未采用。"};
+      if(takeout.getTime()-group.putin.getTime()!==day*86400000) return {ok:false,error:"推荐方案不满足 取出=放入+Day×24h，未采用。"};
+      if(seen[day]) return {ok:false,error:"推荐方案重复包含 Day"+day+"，未采用。"};
+      seen[day]=true;
+      var row=null;
+      for(var r=0;r<rows.length;r++){
+        if(rows[r].expId===expId && rows[r].day===day){ row=rows[r]; break; }
+      }
+      if(!row || !isUnconfirmed55SuggestionRow(row)) return {ok:false,error:"Day"+day+" 已确认放入或状态已变化，整组未采用。"};
+      var summary=build55ConflictSummary(row,targetState);
+      if(!summary.conflictReasons.length) return {ok:false,error:"Day"+day+" 已无冲突，整组未采用（请重新查看调整建议）。"};
+      var putinStatus=operationDateStatus(group.putin,targetState);
+      var takeoutStatus=operationDateStatus(takeout,targetState);
+      if(!putinStatus.available) return {ok:false,error:"Day"+day+" 推荐放入日期不可操作，整组未采用。"};
+      if(!takeoutStatus.available) return {ok:false,error:"Day"+day+" 推荐取出日期不可操作，整组未采用。"};
+      changes.push({day:day,putin:new Date(group.putin)});
+    }
+  }
+  if(!changes.length) return {ok:false,error:"当前没有可应用的推荐节点。"};
+  return {ok:true,changes:changes};
+}
+function apply55GroupedSuggestionPlan(targetState, expId, plan){
+  var checked=validate55GroupedSuggestionPlanForApply(targetState, expId, plan);
+  if(!checked.ok) return checked;
+  var applied=0;
+  for(var i=0;i<checked.changes.length;i++){
+    var change=checked.changes[i];
+    var ex=exOf(targetState, expId, change.day);
+    var want=fmtDL(change.putin);
+    if(ex.adjustedPlanPutin===want) continue;      /* 幂等：已等于目标时间不再重复写 */
+    ex.adjustedPlanPutin=want;
+    targetState.executions[exKey(expId, change.day)]=ex;
+    applied++;
+  }
+  return {ok:true,applied:applied,changes:checked.changes};
+}
+/* 采用确认弹窗：按放入批次分组展示 Day 与对应取出时间；确认才写 state。 */
+function apply55GroupedPlanConfirmHTML(exp, plan){
+  var html='<h3>采用推荐方案</h3><div class="confirmbox">将调整以下55℃节点：</div>';
+  for(var g=0;g<plan.groups.length;g++){
+    var group=plan.groups[g];
+    html+='<div class="confirmbox"><b>'+esc(fmtCompact(group.putin))+' 放入：</b><br>';
+    for(var d=0;d<group.days.length;d++){
+      html+='Day'+esc(group.days[d])+' → '+esc(fmtCompact(group.takeouts[d]))+'<br>';
+    }
+    html+='</div>';
+  }
+  return html+'<div class="muted">仅调整上述冲突节点，无冲突节点保持原计划。</div>'
+    +'<div class="m-foot">'
+    +'<button data-act="groupedApplyYes" data-id="'+esc(exp.id)+'" data-sig="'+esc(grouped55PlanSignature(plan))+'">确认采用</button>'
+    +'<button class="ghost" data-act="closeModal">取消</button></div>';
 }
 /* Date → datetime-local 文本（调整计划弹窗用） */
 function fmtDL(dt){ return ymdOf(dt)+"T"+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
@@ -3035,6 +3105,31 @@ function onModalClick(ev){
     state.executions[exKey(exp.id, day)] = exR;
     saveState(); closeModal(); renderCurrent();
     showToast("Day"+day+" 已恢复原计划 ✓");
+    return;
+  }
+  if(act==="groupedApplyOpen"){
+    /* 任务08：采用前按当前 state 重新计算推荐方案；与展示时签名不一致则拒绝过期方案 */
+    var planOpen=build55GroupedConflictSuggestions(computeSchedule(state).rows,state,{expId:exp.id});
+    var sigOpen=t.getAttribute("data-sig")||"";
+    if(!planOpen || grouped55PlanSignature(planOpen)!==sigOpen){
+      showToast("当前排程或日期规则已变化，请重新查看调整建议。", true); return;
+    }
+    var checkedOpen=validate55GroupedSuggestionPlanForApply(state,exp.id,planOpen);
+    if(!checkedOpen.ok){ showToast(checkedOpen.error, true); return; }
+    openModal(apply55GroupedPlanConfirmHTML(exp, planOpen));
+    return;
+  }
+  if(act==="groupedApplyYes"){
+    /* 确认采用：再次按当前 state 重算并全量校验，全部合法才一次性写入 */
+    var planYes=build55GroupedConflictSuggestions(computeSchedule(state).rows,state,{expId:exp.id});
+    var sigYes=t.getAttribute("data-sig")||"";
+    if(!planYes || grouped55PlanSignature(planYes)!==sigYes){
+      showToast("当前排程或日期规则已变化，请重新查看调整建议。", true); return;
+    }
+    var resultYes=apply55GroupedSuggestionPlan(state,exp.id,planYes);
+    if(!resultYes.ok){ showToast(resultYes.error, true); return; }
+    saveState(); closeModal(); renderCurrent();
+    showToast("已采用推荐方案：调整 "+resultYes.changes.length+" 个节点 ✓");
     return;
   }
   if(day!==null && act==="nodeSave"){

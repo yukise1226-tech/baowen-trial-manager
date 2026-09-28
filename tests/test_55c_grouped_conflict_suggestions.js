@@ -177,7 +177,7 @@ test('GROUP-14', '生成联合建议前后36℃ rows36 完全一致', () => {
   assert.equal(JSON.stringify(app.computeSchedule(state).rows36), before);
 });
 
-test('GROUP-15', '操作日程展示联合建议、分组时间与总批次数，且无应用按钮', () => {
+test('GROUP-15', '操作日程展示联合建议、分组时间与总批次数；采用仅提供确认入口，不直接写 state', () => {
   const state = classicState();
   const day3 = app.computeSchedule(state).rows.find(row => row.day === 3);
   const markup = app.operation55SuggestionHTML(day3, state, day3.effectivePlanTakeout);
@@ -185,7 +185,10 @@ test('GROUP-15', '操作日程展示联合建议、分组时间与总批次数�
   assert.match(markup, /总批次数：3/);
   assert.match(markup, /Day9、Day13、Day14/);
   assert.match(markup, /Day10、Day11、Day12/);
-  assert.doesNotMatch(markup, /data-act="[^"]*(apply|adopt|saveSuggestion)/i);
+  /* 任务08：出现“采用推荐方案”按钮，但只打开确认弹窗（groupedApplyOpen），不直接写 state */
+  assert.match(markup, /采用推荐方案/);
+  assert.match(markup, /data-act="groupedApplyOpen"/);
+  assert.doesNotMatch(markup, /data-act="groupedApplyYes"/);
 });
 
 test('GROUP-16', '已确认放入的冲突节点不进入联合建议', () => {

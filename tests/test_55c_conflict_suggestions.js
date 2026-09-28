@@ -159,14 +159,16 @@ test('SUGGEST-13', '生成建议前后 rows36 JSON 完全一致', () => {
   assert.equal(JSON.stringify(app.computeSchedule(state).rows36), before);
 });
 
-test('SUGGEST-14', '操作日程只读展示“查看调整建议”且没有采用控件', () => {
+test('SUGGEST-14', '操作日程只读展示“查看调整建议”；采用推荐方案只打开确认弹窗，不直接写 state', () => {
   const state = app.defaultState();
   app.state = state;
   const row = classicDay3(state);
   const markup = app.todayTakeoutRow(row);
   assert.match(markup, /查看调整建议/);
   assert.match(markup, /不会自动修改计划/);
-  assert.doesNotMatch(markup, /data-act="[^"]*(apply|adopt|saveSuggestion)/i);
+  /* 任务08：出现“采用推荐方案”按钮，但只打开确认弹窗（groupedApplyOpen），不直接写 state */
+  assert.match(markup, /data-act="groupedApplyOpen"/);
+  assert.doesNotMatch(markup, /data-act="groupedApplyYes"/);
 });
 
 test('SUGGEST-15', '未收录年份仍按周末与 customSkipDates 计算且标记覆盖不足', () => {
