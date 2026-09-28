@@ -401,7 +401,7 @@ function weekdayName(dt){ return ["周日","周一","周二","周三","周四","
 function firstWorkdayAtOrAfter(dt){ var d=new Date(dt); while(isWeekend(d)) d=addDays(d,1); return d; }
 function ymdOf(dt){ return formatYMD(dt.getFullYear(), dt.getMonth()+1, dt.getDate()); }
 
-/* V0.7 日期可操作性纯规则层；holidayDates 预留给未来节假日数据源注入，本层不获取外部数据。 */
+/* V0.7 日期可操作性纯规则层；法定节假日由可替换 provider 注入，本层不联网。 */
 function operationDateSetHas(dateSet, dateKey){
   if(!dateSet) return false;
   if(typeof dateSet.has==="function") return dateSet.has(dateKey);
@@ -409,10 +409,11 @@ function operationDateSetHas(dateSet, dateKey){
 }
 function isOperationDateAvailable(dt, rules){
   if(!(dt instanceof Date) || isNaN(dt.getTime())) return false;
-  if(isWeekend(dt)) return false;
   var opts=rules||{}, dateKey=ymdOf(dt);
-  return !operationDateSetHas(opts.customSkipDates,dateKey)
-    && !operationDateSetHas(opts.holidayDates,dateKey);
+  if(operationDateSetHas(opts.customSkipDates,dateKey)) return false;
+  if(operationDateSetHas(opts.workdayOverrides,dateKey)) return true;
+  if(operationDateSetHas(opts.holidayDates,dateKey)) return false;
+  return !isWeekend(dt);
 }
 function nextOperationDateAtOrAfter(dt, rules){
   if(!(dt instanceof Date) || isNaN(dt.getTime())) return null;
@@ -421,17 +422,51 @@ function nextOperationDateAtOrAfter(dt, rules){
   return next;
 }
 
-function normalizeCustomSkipDates(values){
-  var seen={}, dates=[];
-  if(!Array.isArray(values)) return dates;
-  for(var i=0;i<values.length;i++){
-    var parsed=parseDateInput(String(values[i]||"").trim());
+function normalizeOperationDateList(values){
+  var seen={}, dates=[], source=values;
+  if(!Array.isArray(source) && source && typeof source.forEach==="function"){
+    source=[]; values.forEach(function(value){ source.push(value); });
+  }
+  if(!Array.isArray(source)) return dates;
+  for(var i=0;i<source.length;i++){
+    var parsed=parseDateInput(String(source[i]||"").trim());
     if(!parsed) continue;
     var key=formatYMD(parsed.y,parsed.m,parsed.d);
     if(!seen[key]){ seen[key]=true; dates.push(key); }
   }
   dates.sort();
   return dates;
+}
+function normalizeCustomSkipDates(values){ return normalizeOperationDateList(values); }
+function normalizeHolidayCalendar(value, fallback){
+  var raw=value&&typeof value==="object"?value:{}, defaults=fallback||{};
+  var year=+(raw.year!=null?raw.year:defaults.year);
+  if(!isFinite(year) || year<1) year=null; else year=Math.floor(year);
+  return {
+    year:year,
+    holidayDates:normalizeOperationDateList(raw.holidayDates),
+    workdayOverrides:normalizeOperationDateList(raw.workdayOverrides),
+    source:String(raw.source||defaults.source||"disabled"),
+    version:String(raw.version||defaults.version||"0")
+  };
+}
+function createHolidayCalendarProvider(options){
+  var opts=options&&typeof options==="object"?options:{};
+  var source=String(opts.source||"disabled"), version=String(opts.version||"0");
+  return {
+    source:source, version:version,
+    loadYear:function(year){
+      var raw=typeof opts.loadYear==="function"?opts.loadYear(year):null;
+      return normalizeHolidayCalendar(raw,{year:year,source:source,version:version});
+    }
+  };
+}
+function loadHolidayCalendar(provider, year){
+  var target=provider&&typeof provider.loadYear==="function"
+    ? provider : createHolidayCalendarProvider();
+  return normalizeHolidayCalendar(target.loadYear(year),{
+    year:year, source:target.source||"disabled", version:target.version||"0"
+  });
 }
 function cleanCalendarRules(rules){
   return {customSkipDates:normalizeCustomSkipDates(rules&&rules.customSkipDates)};
@@ -462,10 +497,15 @@ function removeCustomSkipDate(targetState, value){
   targetState.calendarRules.customSkipDates=targetState.calendarRules.customSkipDates.filter(function(date){ return date!==key; });
   return targetState.calendarRules.customSkipDates.length!==before;
 }
-/* UI/持久化向任务 01 规则层的唯一转换口；法定节假日数据本轮固定为空。 */
-function operationDateRulesForState(targetState){
+/* UI/持久化向纯规则层的唯一转换口；holidayCalendar 缺失时保持 V0.6/V0.7 既有规则。 */
+function operationDateRulesForState(targetState, holidayCalendar){
   var clean=cleanCalendarRules(targetState&&targetState.calendarRules);
-  return {customSkipDates:clean.customSkipDates,holidayDates:[]};
+  var calendar=normalizeHolidayCalendar(holidayCalendar);
+  return {
+    customSkipDates:clean.customSkipDates,
+    holidayDates:calendar.holidayDates,
+    workdayOverrides:calendar.workdayOverrides
+  };
 }
 
 function fmtDT(dt){ return ymdOf(dt)+" "+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
