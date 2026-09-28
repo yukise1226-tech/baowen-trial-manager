@@ -272,4 +272,60 @@ test('REOPT-17', 'schemaVersion 不变', () => {
   assert.equal(state.schemaVersion, 6);
 });
 
+/* ---- 任务09.3.1：新旧方案比较口径 ---- */
+test('REOPT-SUM-01', '新建议 batchCount 等于实际采用后 computeSchedule 的 batches.length', () => {
+  const state = adoptedThenProd19();
+  const suggestion = suggestionOf(state);
+  const comparison = app.compare55CurrentAndSuggestedPlan(state, 'E55', suggestion);
+  app.apply55ReoptimizedSuggestion(state, 'E55', suggestion);
+  const item = app.computeSchedule(state).items.find(it => it.kind === 'ok' && it.exp.id === 'E55');
+  assert.equal(comparison.suggested.batchCount, item.batches.length);
+});
+
+test('REOPT-SUM-02', '09-19 案例显示 5批 → 5批（非 5批 → 4批）', () => {
+  const state = adoptedThenProd19();
+  const comparison = app.compare55CurrentAndSuggestedPlan(state, 'E55', suggestionOf(state));
+  assert.equal(comparison.current.batchCount, 5);
+  assert.equal(comparison.suggested.batchCount, 5);
+});
+
+test('REOPT-SUM-03', 'suggested latestTakeout 等于实际采用后完整排程的最晚取出', () => {
+  const state = adoptedThenProd19();
+  const suggestion = suggestionOf(state);
+  const comparison = app.compare55CurrentAndSuggestedPlan(state, 'E55', suggestion);
+  app.apply55ReoptimizedSuggestion(state, 'E55', suggestion);
+  let latest = null;
+  for (const row of rowsOf(state)) {
+    if (row.expId !== 'E55' || row.status !== '未放入' || !row.effectivePlanTakeout) continue;
+    if (!latest || row.effectivePlanTakeout.getTime() > latest) latest = row.effectivePlanTakeout.getTime();
+  }
+  assert.equal(comparison.suggested.latestTakeout.getTime(), latest);
+  assert.equal(app.fmtDT(comparison.suggested.latestTakeout), '2026-10-12 10:00');
+});
+
+test('REOPT-SUM-04', 'suggested terminalDay 为整个未执行试验最高 Day，不是仅冲突节点最高 Day', () => {
+  const state = adoptedThenProd19();
+  const comparison = app.compare55CurrentAndSuggestedPlan(state, 'E55', suggestionOf(state));
+  assert.equal(comparison.suggested.terminalDay, 14);
+});
+
+test('REOPT-SUM-05', 'suggested terminalTakeout 与实际采用后的完整排程一致', () => {
+  const state = adoptedThenProd19();
+  const suggestion = suggestionOf(state);
+  const comparison = app.compare55CurrentAndSuggestedPlan(state, 'E55', suggestion);
+  app.apply55ReoptimizedSuggestion(state, 'E55', suggestion);
+  const row14 = rowsOf(state).find(r => r.expId === 'E55' && r.day === 14);
+  assert.equal(comparison.suggested.terminalTakeout.getTime(), row14.effectivePlanTakeout.getTime());
+  assert.equal(app.fmtDT(comparison.suggested.terminalTakeout), '2026-10-08 10:00');
+});
+
+test('REOPT-SUM-06', 'preview 仍不修改真实 state', () => {
+  const state = adoptedThenProd19();
+  const before = JSON.stringify(state);
+  const suggestion = suggestionOf(state);
+  app.compare55CurrentAndSuggestedPlan(state, 'E55', suggestion);
+  app.project55PlanSummaryAfterSuggestion(state, 'E55', suggestion);
+  assert.equal(JSON.stringify(state), before);
+});
+
 console.log(`55C-REOPTIMIZE: ${passed} PASS, ${total - passed} FAIL`);

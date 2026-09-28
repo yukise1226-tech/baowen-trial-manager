@@ -1406,13 +1406,43 @@ function current55PlanSummary(targetState, expId){
     terminalDay:terminalDay,
     terminalTakeout:terminalTakeout?new Date(terminalTakeout):null};
 }
+/* 任务09.3.1：把新建议投射到完整试验排程后计算摘要（与“当前计划”同口径）。
+ * 在 clone 上：保留真实已确认节点 → 清除未确认旧调整 → 写入 suggestion.plan 的新调整 →
+ * computeSchedule(clone) → 按全部未放入节点统计批次数/最晚取出/最高 Day 完成。
+ * 不得直接用 suggestion.plan.batchCount 当作“新计划总批次数”（那只是冲突节点子集）。 */
+function project55PlanSummaryAfterSuggestion(targetState, expId, suggestion){
+  if(!targetState || typeof targetState!=="object" || !suggestion || !suggestion.plan) return null;
+  var clone=null;
+  try{ clone=JSON.parse(JSON.stringify(targetState)); }catch(e){ return null; }
+  if(!clone.executions || typeof clone.executions!=="object") clone.executions={};
+  /* 1. 清除未确认节点旧调整（与 build55ReoptimizationSuggestion 一致） */
+  for(var key in clone.executions){
+    if(String(key).indexOf(expId+"|")!==0) continue;
+    var parts=String(key).split("|");
+    if(parts.length!==2) continue;
+    var ex=clone.executions[key];
+    if(ex && ex.putinConfirmed!==true && ex.adjustedPlanPutin) delete ex.adjustedPlanPutin;
+  }
+  /* 2. 写入新方案的调整计划 */
+  var plan=suggestion.plan;
+  for(var g=0;g<plan.groups.length;g++){
+    for(var d=0;d<plan.groups[g].days.length;d++){
+      var day=plan.groups[g].days[d];
+      var exW=clone.executions[exKey(expId,day)] || cleanExecution(null);
+      if(exW.putinConfirmed===true) continue;   /* 已确认节点绝不参与 */
+      exW.adjustedPlanPutin=fmtDL(plan.groups[g].putin);
+      clone.executions[exKey(expId,day)]=exW;
+    }
+  }
+  /* 3. 按完整排程统计（与 current55PlanSummary 同口径） */
+  return current55PlanSummary(clone,expId);
+}
 function compare55CurrentAndSuggestedPlan(targetState, expId, suggestion){
   var current=current55PlanSummary(targetState,expId);
-  var plan=suggestion&&suggestion.plan;
+  var suggested=project55PlanSummaryAfterSuggestion(targetState,expId,suggestion);
   return {
     current:current,
-    suggested:plan?{batchCount:plan.batchCount,latestTakeout:plan.latestTakeout,
-      terminalDay:plan.terminalDay,terminalTakeout:plan.terminalTakeout}:null,
+    suggested:suggested,
     changes:suggestion?suggestion.changes:[]
   };
 }
