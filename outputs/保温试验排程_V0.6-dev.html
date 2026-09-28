@@ -1029,6 +1029,22 @@ function exp55ConflictSummaryHTML(item, targetState){
     +'<button class="mini" data-act="groupedApplyOpen" data-id="'+esc(item.exp.id)+'" data-sig="'+esc(grouped55PlanSignature(plan))+'">查看联合调整建议</button>'
     +'</div>';
 }
+/* 任务08.2：plan / today / modal 三处共用的“采用推荐方案”触发入口。
+ * 按当前 state 重算推荐方案 → 签名校验 → 全量校验 → 打开确认弹窗（任务08流程）。 */
+function open55GroupedApplyFromTrigger(t){
+  var id=t.getAttribute("data-id");
+  if(!id) return;
+  var exp=findExp(id);
+  if(!exp) return;
+  var plan=build55GroupedConflictSuggestions(computeSchedule(state).rows,state,{expId:exp.id});
+  var sig=t.getAttribute("data-sig")||"";
+  if(!plan || grouped55PlanSignature(plan)!==sig){
+    showToast("当前排程或日期规则已变化，请重新查看调整建议。", true); return;
+  }
+  var checked=validate55GroupedSuggestionPlanForApply(state,exp.id,plan);
+  if(!checked.ok){ showToast(checked.error, true); return; }
+  openModal(apply55GroupedPlanConfirmHTML(exp, plan));
+}
 /* Date → datetime-local 文本（调整计划弹窗用） */
 function fmtDL(dt){ return ymdOf(dt)+"T"+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
 /* 当前时间 → datetime-local 文本 */
@@ -3133,15 +3149,8 @@ function onModalClick(ev){
     return;
   }
   if(act==="groupedApplyOpen"){
-    /* 任务08：采用前按当前 state 重新计算推荐方案；与展示时签名不一致则拒绝过期方案 */
-    var planOpen=build55GroupedConflictSuggestions(computeSchedule(state).rows,state,{expId:exp.id});
-    var sigOpen=t.getAttribute("data-sig")||"";
-    if(!planOpen || grouped55PlanSignature(planOpen)!==sigOpen){
-      showToast("当前排程或日期规则已变化，请重新查看调整建议。", true); return;
-    }
-    var checkedOpen=validate55GroupedSuggestionPlanForApply(state,exp.id,planOpen);
-    if(!checkedOpen.ok){ showToast(checkedOpen.error, true); return; }
-    openModal(apply55GroupedPlanConfirmHTML(exp, planOpen));
+    /* 任务08.2：与排程页/操作日程共用同一入口 helper */
+    open55GroupedApplyFromTrigger(t);
     return;
   }
   if(act==="groupedApplyYes"){
@@ -3691,6 +3700,8 @@ function onPlanClick(ev){
     if(!r36 || r36.status!=="待执行"){ showToast("只有尚未执行的 36℃任务可以调整计划。",true); return; }
     openAdjust36Plan(exp,r36); return;
   }
+  /* 任务08.2：试验级【查看联合调整建议】按钮不带 data-day，须在 day 拦截前处理 */
+  if(act==="groupedApplyOpen"){ open55GroupedApplyFromTrigger(t); return; }
   if(day===null) return;
   if(act==="adjustPlan"){
     var sch = computeSchedule({opTime:state.opTime, experiments:[exp], executions:state.executions});
@@ -4232,6 +4243,8 @@ function onTodayClick(ev){
     showToast("已批量确认放入 "+days.length+" 个 Day ✓");
     return;
   }
+  /* 任务08.2：操作日程【采用推荐方案】按钮不带 data-day，须在 day 拦截前处理 */
+  if(act==="groupedApplyOpen"){ open55GroupedApplyFromTrigger(t); return; }
   if(day===null) return;
   if(act==="putinConfirm"){ openPutinConfirm(exp, day); }
   else if(act==="completeConfirm"){ openCompleteConfirm(exp, day); }
