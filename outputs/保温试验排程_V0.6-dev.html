@@ -195,6 +195,7 @@ table.planmain tbody tr:not(.row-done):hover{background:#eef4fc;}
       <button class="ghost mini" id="btnExport">导出数据JSON</button>
       <button class="ghost mini" id="btnImport">导入数据JSON</button>
       <input type="file" id="importFile" accept=".json,application/json" style="display:none">
+      <button class="ghost mini" id="btnDateRules">日期规则</button>
       <button class="ghost mini" id="btnSyncSettings">同步设置</button>
       <button class="ghost mini" id="btnSyncUpload">上传到云端</button>
       <button class="ghost mini" id="btnSyncDownload">从云端拉取</button>
@@ -418,6 +419,53 @@ function nextOperationDateAtOrAfter(dt, rules){
   var next=new Date(dt);
   while(!isOperationDateAvailable(next,rules)) next=addDays(next,1);
   return next;
+}
+
+function normalizeCustomSkipDates(values){
+  var seen={}, dates=[];
+  if(!Array.isArray(values)) return dates;
+  for(var i=0;i<values.length;i++){
+    var parsed=parseDateInput(String(values[i]||"").trim());
+    if(!parsed) continue;
+    var key=formatYMD(parsed.y,parsed.m,parsed.d);
+    if(!seen[key]){ seen[key]=true; dates.push(key); }
+  }
+  dates.sort();
+  return dates;
+}
+function cleanCalendarRules(rules){
+  return {customSkipDates:normalizeCustomSkipDates(rules&&rules.customSkipDates)};
+}
+function normalizeCalendarRules(targetState){
+  if(!targetState || typeof targetState!=="object") return false;
+  var raw=targetState.calendarRules, clean=cleanCalendarRules(raw);
+  var changed=!raw || typeof raw!=="object" || !Array.isArray(raw.customSkipDates)
+    || JSON.stringify(raw.customSkipDates)!==JSON.stringify(clean.customSkipDates);
+  targetState.calendarRules=clean;
+  return changed;
+}
+function addCustomSkipDate(targetState, value){
+  var parsed=parseDateInput(String(value||"").trim());
+  if(!parsed || !targetState || typeof targetState!=="object") return "";
+  normalizeCalendarRules(targetState);
+  var key=formatYMD(parsed.y,parsed.m,parsed.d);
+  targetState.calendarRules.customSkipDates=normalizeCustomSkipDates(
+    targetState.calendarRules.customSkipDates.concat([key]));
+  return key;
+}
+function removeCustomSkipDate(targetState, value){
+  if(!targetState || typeof targetState!=="object") return false;
+  normalizeCalendarRules(targetState);
+  var parsed=parseDateInput(String(value||"").trim());
+  if(!parsed) return false;
+  var key=formatYMD(parsed.y,parsed.m,parsed.d), before=targetState.calendarRules.customSkipDates.length;
+  targetState.calendarRules.customSkipDates=targetState.calendarRules.customSkipDates.filter(function(date){ return date!==key; });
+  return targetState.calendarRules.customSkipDates.length!==before;
+}
+/* UI/持久化向任务 01 规则层的唯一转换口；法定节假日数据本轮固定为空。 */
+function operationDateRulesForState(targetState){
+  var clean=cleanCalendarRules(targetState&&targetState.calendarRules);
+  return {customSkipDates:clean.customSkipDates,holidayDates:[]};
 }
 
 function fmtDT(dt){ return ymdOf(dt)+" "+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
@@ -1217,7 +1265,8 @@ function exportJSONString(state){
     schemaVersion:(typeof state.schemaVersion==="number" ? state.schemaVersion : 6),
     uiVersion: state.uiVersion || UI_VERSION,
     exportedAt:new Date().toISOString(),
-    opTime:state.opTime, experiments:state.experiments, executions:state.executions}, null, 2);
+    opTime:state.opTime, calendarRules:cleanCalendarRules(state.calendarRules),
+    experiments:state.experiments, executions:state.executions}, null, 2);
 }
 function cleanExperiment(e){
   return {
@@ -1402,6 +1451,7 @@ function importJSONString(text){
     version: (typeof d.version === "number" && d.version >= 4) ? d.version : 3,
     schemaVersion: (typeof d.schemaVersion==="number") ? d.schemaVersion : undefined,
     opTime: (typeof d.opTime==="string" && parseOpTime(d.opTime)) ? d.opTime : "10:00",
+    calendarRules: cleanCalendarRules(d.calendarRules),
     experiments: d.experiments.map(cleanExperiment),
     executions: (d.executions && typeof d.executions==="object") ? d.executions : {}
   };
@@ -1533,6 +1583,7 @@ function writeSyncToken(token){
 function stateSnapshotForSync(localState){
   var snap=JSON.parse(JSON.stringify(localState));
   delete snap._pendingSave;
+  normalizeCalendarRules(snap);
   if(snap.schemaVersion!==6) throw new Error("只允许同步 schemaVersion 6 数据");
   return snap;
 }
@@ -1731,7 +1782,7 @@ function downloadStateWithAdapter(adapter,localState,localMeta,confirmFn){
 }
 /* V0.5.4：schemaVersion=数据结构版本（迁移依据），uiVersion=界面版本，两者互不混用 */
 function defaultState(){ return {version:4, schemaVersion:6, uiVersion:UI_VERSION,
-  opTime:"10:00", experiments:[], executions:{}}; }
+  opTime:"10:00", calendarRules:{customSkipDates:[]}, experiments:[], executions:{}}; }
 function loadState(){
   try{
     var raw = localStorage.getItem(LS_KEY)
@@ -1745,6 +1796,7 @@ function loadState(){
     if(!s.opTime) s.opTime = "10:00";
     migrateExecutions(s);
     var pending = ensurePlanTimes(s)>0;
+    if(normalizeCalendarRules(s)) pending=true;
     var m51 = migrateV051(s, raw);           /* V0.5.1 旧数据迁移（只执行一次） */
     var m54 = migrateV054(s);                /* V0.5.4：独立 schemaVersion + 执行记录规范化 */
     var m60 = migrateV06(s);                 /* V0.6：独立 36℃协议 */
@@ -1755,6 +1807,7 @@ function loadState(){
 }
 function saveState(options){
   try{
+    normalizeCalendarRules(state);
     localStorage.setItem(LS_KEY, JSON.stringify(state));
     if(options&&options.syncedMetadata){
       var localMeta=loadSyncMeta(), remoteMeta=options.syncedMetadata;
@@ -1824,6 +1877,44 @@ function openSyncSettings(){
     if(document.getElementById("syncTokenClear").checked) writeSyncToken("");
     else if(token) writeSyncToken(token);
     closeModal(); renderSyncStatus(); showToast("同步设置已保存 ✓");
+  });
+}
+
+function dateRulesSettingsHTML(targetState){
+  var rules=operationDateRulesForState(targetState), dates=rules.customSkipDates;
+  var list=dates.length ? dates.map(function(date){
+    return '<button class="skipbtn on" data-skip-date="'+esc(date)+'" title="删除此日期">'+esc(date)+'　删除</button>';
+  }).join("") : '<span class="muted">尚未添加自定义跳过日期</span>';
+  return '<h3>日期规则 / 跳过日期</h3>'
+    +'<div class="confirmbox">周六、周日固定为不可操作日。自定义日期本轮仅保存为设置，尚不改变 55℃/36℃排程。</div>'
+    +'<div class="egrid"><label>新增单日跳过日期<input id="customSkipDateInput" type="date"></label>'
+    +'<div style="display:flex;align-items:flex-end"><button id="customSkipDateAdd">新增日期</button></div></div>'
+    +'<div class="hintbox">已保存日期（点击“删除”移除）</div><div id="customSkipDateList" class="skipgrid">'+list+'</div>'
+    +'<div class="m-foot"><button class="ghost" data-act="closeModal">完成</button></div>';
+}
+function openDateRulesSettings(){
+  normalizeCalendarRules(state);
+  openModal(dateRulesSettingsHTML(state));
+  var input=document.getElementById("customSkipDateInput"), add=document.getElementById("customSkipDateAdd");
+  function addDate(){
+    var before=state.calendarRules.customSkipDates.length;
+    var key=addCustomSkipDate(state,input&&input.value);
+    if(!key){ showToast("请选择有效日期",true); return; }
+    var changed=state.calendarRules.customSkipDates.length!==before;
+    if(changed) saveState();
+    openDateRulesSettings();
+    showToast(changed?("已添加跳过日期："+key):("该日期已存在："+key));
+  }
+  if(add) add.addEventListener("click",addDate);
+  if(input) input.addEventListener("keydown",function(ev){ if(ev.key==="Enter"){ ev.preventDefault(); addDate(); } });
+  var list=document.getElementById("customSkipDateList");
+  if(list) list.addEventListener("click",function(ev){
+    var button=ev.target&&ev.target.closest?ev.target.closest("[data-skip-date]"):null;
+    if(!button) return;
+    var key=button.getAttribute("data-skip-date");
+    if(removeCustomSkipDate(state,key)){
+      saveState(); openDateRulesSettings(); showToast("已删除跳过日期："+key);
+    }
   });
 }
 function browserSyncConfirm(message){ return typeof window!=="undefined" && typeof window.confirm==="function" ? window.confirm(message) : false; }
@@ -1918,6 +2009,7 @@ function bindEvents(){
     if(f) f.click();
   });
   on("importFile", "change", importJSONFile);
+  on("btnDateRules", "click", openDateRulesSettings);
   on("btnSyncSettings", "click", openSyncSettings);
   on("btnSyncUpload", "click", uploadToCloud);
   on("btnSyncDownload", "click", downloadFromCloud);
