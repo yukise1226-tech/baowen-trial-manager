@@ -62,6 +62,9 @@ td .cellwrap{min-width:96px;}
 .st-doing{color:var(--amber);font-weight:600;}
 .st-pending{color:var(--muted);}
 .st-skip{color:var(--muted);font-style:italic;}
+.operation-date-note{display:block;margin-top:3px;font-size:11.5px;line-height:1.35;white-space:normal;font-weight:600;}
+.operation-date-note.conflict{color:var(--red);}
+.operation-date-note.coverage{color:var(--amber);}
 .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;}
 .badge.ok{background:var(--green-bg);color:var(--green);}
 .badge.draft{background:var(--amber-bg);color:var(--amber);}
@@ -415,6 +418,34 @@ function isOperationDateAvailable(dt, rules){
   if(operationDateSetHas(opts.holidayDates,dateKey)) return false;
   return !isWeekend(dt);
 }
+/* 计划操作日只读状态：识别冲突与官方日历覆盖情况，不改写任何排程时间。 */
+function operationDateStatus(dt, targetState, provider){
+  if(!(dt instanceof Date) || isNaN(dt.getTime())){
+    return {available:false,reason:"invalid-date",date:"",holidayCalendar:{
+      year:null,available:false,status:"unavailable",source:"",version:"",sourceUrl:""
+    }};
+  }
+  var dateKey=ymdOf(dt), calendar=loadHolidayCalendar(
+    provider&&typeof provider.loadYear==="function"?provider:chinaHolidayCalendarProvider,
+    dt.getFullYear());
+  var rules=operationDateRulesForState(targetState,calendar), available=true, reason="available";
+  if(operationDateSetHas(rules.customSkipDates,dateKey)){
+    available=false; reason="custom-skip";
+  }else if(operationDateSetHas(rules.workdayOverrides,dateKey)){
+    available=true; reason="available";
+  }else if(operationDateSetHas(rules.holidayDates,dateKey)){
+    available=false; reason="holiday";
+  }else if(isWeekend(dt)){
+    available=false; reason="weekend";
+  }else if(!calendar.available){
+    /* 未收录年份不猜测节假日，仅标记覆盖缺失；普通工作日仍可操作。 */
+    available=true; reason="calendar-unavailable";
+  }
+  return {available:available,reason:reason,date:dateKey,holidayCalendar:{
+    year:calendar.year,available:calendar.available,status:calendar.status,
+    source:calendar.source,version:calendar.version,sourceUrl:calendar.sourceUrl
+  }};
+}
 function nextOperationDateAtOrAfter(dt, rules){
   if(!(dt instanceof Date) || isNaN(dt.getTime())) return null;
   var next=new Date(dt);
@@ -557,6 +588,18 @@ function fmtCN(dt){ return (dt.getMonth()+1)+"月"+dt.getDate()+"日 "+weekdayNa
 /* 紧凑时间显示（主行用）：09-22 10:00；完整信息（含年份/星期）在 title 与详情 */
 function fmtCompact(dt){ return pad2(dt.getMonth()+1)+"-"+pad2(dt.getDate())+" "+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
 function fmtFull(dt){ return ymdOf(dt)+" "+weekdayName(dt)+" "+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
+function operationDateStatusHTML(dt, targetState){
+  if(!dt) return "";
+  var info=operationDateStatus(dt,targetState), labels={
+    "custom-skip":"自定义跳过","holiday":"法定节假日","weekend":"周末"
+  };
+  var html=labels[info.reason]
+    ? '<span class="operation-date-note conflict">⚠ '+labels[info.reason]+'｜原计划不变</span>' : "";
+  if(!info.holidayCalendar.available){
+    html+='<span class="operation-date-note coverage">该年份官方节假日数据未加载/不可用</span>';
+  }
+  return html;
+}
 /* Date → datetime-local 文本（调整计划弹窗用） */
 function fmtDL(dt){ return ymdOf(dt)+"T"+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
 /* 当前时间 → datetime-local 文本 */
@@ -1975,7 +2018,7 @@ function dateRulesSettingsHTML(targetState){
   }).join("") : '<span class="muted">尚未添加自定义跳过日期</span>';
   return '<h3>日期规则 / 跳过日期</h3>'
     +'<div class="hintbox">'+esc(holidayStatus)+'</div>'
-    +'<div class="confirmbox">2026 节假日数据已进入日期规则基础层；本轮尚不接入 55℃/36℃排程，当前排程结果保持不变。</div>'
+    +'<div class="confirmbox">2026 节假日数据已用于操作日程冲突提示；不会修改计划时间或自动顺延。</div>'
     +'<div class="egrid"><label>新增单日跳过日期<input id="customSkipDateInput" type="date"></label>'
     +'<div style="display:flex;align-items:flex-end"><button id="customSkipDateAdd">新增日期</button></div></div>'
     +'<div class="hintbox">已保存日期（点击“删除”移除）</div><div id="customSkipDateList" class="skipgrid">'+list+'</div>'
@@ -3438,7 +3481,7 @@ function todayPutinRow(r){
   return '<tr data-day="'+r.day+'">'
     + '<td class="dt">'+(planT ? '<span class="dt" title="'+planTitle+'">'+esc(fmtCompact(planT))
       + ((r.status==="未放入" && r.adjusted) ? '<span class="adjmark">已调整</span>' : "")+'</span>'
-      : '<span class="muted">—</span>')+'</td>'
+      : '<span class="muted">—</span>')+operationDateStatusHTML(planT,state)+'</td>'
     + '<td><span class="tasktype">55℃·放入</span></td>'
     + '<td>'+esc(r.no)+'</td>'
     + '<td>'+esc(r.project||"")+'</td>'
@@ -3484,8 +3527,9 @@ function todayTakeoutRow(r){
     personCell = '<input type="text" data-act="execText" data-field="person" data-id="'+esc(r.expId)+'" data-day="'+r.day+'" value="'+esc(ex.person||"")+'">';
     noteCell = '<input type="text" data-act="execText" data-field="note" data-id="'+esc(r.expId)+'" data-day="'+r.day+'" value="'+esc(ex.note||"")+'">';
   }
+  var planT=currentTakeoutOf(r);
   return '<tr data-day="'+r.day+'">'
-    + '<td class="dt">'+todayTimeCell(currentTakeoutOf(r))+'</td>'   /* 进行中=当前预计取出 */
+    + '<td class="dt">'+todayTimeCell(planT)+operationDateStatusHTML(planT,state)+'</td>'   /* 进行中=当前预计取出 */
     + '<td><span class="tasktype">55℃·取出</span></td>'
     + '<td>'+esc(r.no)+'</td>'
     + '<td>'+esc(r.project||"")+'</td>'
@@ -3540,6 +3584,7 @@ function today36Row(r){
     +(r.weekendShifted?' <span class="adjmark" title="周末节点按协议顺延至周一">周末顺延</span>':'')
     +(r.day===0&&r.weekend?' <span class="weekend">周末·不顺延</span>':'');
   plan+='<div class="muted" style="font-size:11px">'+(r.day===0?'原计划开始：':'标准节点：')+esc(fmtCompact(r.originalPlanTime))+'</div>';
+  plan+=operationDateStatusHTML(r.currentPlanTime,state);
   var qty,time,person,note,ops;
   if(locked){
     qty=esc(ex.qty||'—');

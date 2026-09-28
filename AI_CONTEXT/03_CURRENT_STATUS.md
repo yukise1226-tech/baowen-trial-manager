@@ -5,8 +5,14 @@
 - 项目：本地单文件 HTML 保温试验排程工具；业务细则只看 `01_CURRENT_SPEC.md`。
 - 55℃：V0.5.4.1 Stable，冻结；原稳定文件在历史项目目录，未被 V0.6-dev 覆盖。
 - 36℃：V0.6-dev，开发测试中；主 HTML 已有独立 `protocol36`、任务模型和 `schemaVersion: 6`。
-- 当前 Git 分支：`feat/sync-revision-v1.1`；从 `feat/mobile-pages-poc` 的 `87bf151` 创建，未合并 `main`；本包自身提交以仓库 `git log -1` 为准。
+- 当前 Git 分支：`dev-v0.7`；从 `dev-v0.6` 继续开发，未合并 `main`；本包自身提交以仓库 `git log -1` 为准。
 - `v0.5.4.1-stable` tag：**未创建**；没有可可靠定位的历史稳定提交，不得给现有 V0.6-dev 提交误打该 tag。
+
+## V0.7 统一日期规则：任务01～05已完成
+
+- 已有 `customSkipDates`、`holidayDates`、`workdayOverrides`、2026 中国官方节假日 provider 与 `isOperationDateAvailable()`。
+- `operationDateStatus()` 已按计划操作时间返回 `available`、`reason`、`date` 及官方日历覆盖状态；`customSkipDates` 优先级最高，调休上班日覆盖普通周末。
+- 55℃放入/取出与 36℃操作日程只追加“法定节假日 / 周末 / 自定义跳过”冲突提示；不修改原计划时间，不自动顺延。未收录年份不猜测节假日，但仍判断周末与自定义跳过。
 
 ## Cloudflare 云同步 PoC：已完成真实后端联调
 
