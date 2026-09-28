@@ -23,7 +23,7 @@ test('CN26-01', '2026 provider 元数据正确', () => {
   assert.equal(calendar.year, 2026);
   assert.equal(calendar.source, '国务院办公厅');
   assert.equal(calendar.version, '国办发明电〔2025〕7号');
-  assert.equal(calendar.sourceUrl, 'https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm');
+  assert.equal(calendar.sourceUrl, 'https://www.gov.cn/gongbao/2025/issue_12406/material/gwygb202532.pdf');
   assert.equal(calendar.available, true);
   assert.equal(calendar.status, 'loaded');
 });
