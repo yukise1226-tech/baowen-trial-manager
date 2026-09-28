@@ -1025,67 +1025,170 @@ function exp55ConflictSummaryHTML(item, targetState){
     +'<button class="mini" data-act="groupedApplyOpen" data-id="'+esc(item.exp.id)+'" data-sig="'+esc(grouped55PlanSignature(plan))+'">查看联合调整建议</button>'
     +'</div>';
 }
-/* 任务08.4：收集该试验“进行中但未完成”（putinConfirmed=true 且 completeConfirmed!=true）的 Day。
- * 只读；已完成节点绝不进入；36℃键（含 "|36|"）天然被 key 结构排除。 */
-function collect55RestorablePutinDays(targetState, expId){
-  var days=[];
-  if(!targetState || typeof targetState!=="object" || !targetState.executions) return days;
-  for(var key in targetState.executions){
-    var ex=targetState.executions[key];
-    if(!ex || typeof ex!=="object") continue;
-    var parts=String(key).split("|");
-    if(parts.length!==2 || parts[0]!==expId) continue;
-    var day=+parts[1];
-    if(!isFinite(day) || day<1) continue;
-    if(ex.putinConfirmed===true && ex.completeConfirmed!==true) days.push(day);
+/* 任务08.4重做：历史计划异常检测（只读，不修改 state）。
+ * 按“数据本身违反当前业务不变量”判断，绝不按版本号猜测试数据；
+ * 正常执行事实（已完成、进行中且实际放入≥生产日期）绝不进入。 */
+function collect55LegacyPlanAnomalies(targetState, expId){
+  var out=[];
+  if(!targetState || typeof targetState!=="object") return out;
+  var exp=null;
+  if(Array.isArray(targetState.experiments)){
+    for(var e=0;e<targetState.experiments.length;e++){
+      if(targetState.experiments[e].id===expId){ exp=targetState.experiments[e]; break; }
+    }
   }
-  days.sort(function(a,b){ return a-b; });
-  return days;
-}
-/* 任务08.4：原子批量恢复“进行中未完成”节点为未放入——先全量校验，任一不满足一个都不改。
- * 复用 undoPutinRecord：putinConfirmed=false、putinTime=""、adjustedExpectedTakeout 清空；
- * person/note/adjustedPlanPutin 等保留；已完成节点混入即整组拒绝。 */
-function apply55RestoreUnfinishedPutins(targetState, expId, days){
-  if(!targetState || typeof targetState!=="object") return {ok:false,error:"状态无效，无法恢复。"};
-  var list=Array.isArray(days)?days:[];
-  if(!list.length) return {ok:false,error:"没有需要恢复的节点。"};
-  var seen={}, targets=[];
-  for(var i=0;i<list.length;i++){
-    var day=+list[i];
-    if(!isFinite(day) || day<1) return {ok:false,error:"包含无效 Day，未恢复。"};
-    if(seen[day]) return {ok:false,error:"Day 列表重复，未恢复。"};
-    seen[day]=true;
-    var ex=targetState.executions[exKey(expId,day)];
-    if(!ex || typeof ex!=="object" || ex.putinConfirmed!==true) return {ok:false,error:"Day"+day+" 尚未确认放入，未恢复。"};
-    if(ex.completeConfirmed===true) return {ok:false,error:"Day"+day+" 已完成，不能直接恢复为未放入（请先撤销完成），整组未恢复。"};
-    targets.push({day:day,ex:ex});
+  if(!exp || exp.condition==="36±1℃") return out;
+  var prod=exp.prodDate?parseDateInput(exp.prodDate):null;
+  var prodKey=prod?formatYMD(prod.y,prod.m,prod.d):null;
+  var putinDate=exp.putinDate?parseDateInput(exp.putinDate):null;
+  /* A：试验级——计划放入日期早于生产日期 */
+  if(prod && putinDate && ymdCmp(putinDate,prod)<0){
+    out.push({type:"exp-putin-before-prod",day:null,expId:expId,
+      text:"试验计划放入日期早于生产日期",
+      currentText:"计划放入 "+formatYMD(putinDate.y,putinDate.m,putinDate.d)+"；生产日期 "+prodKey,
+      ruleText:"55℃ 计划放入不得早于生产日期（同一天允许）。",
+      fix:"experiment-edit"});
   }
-  for(var t=0;t<targets.length;t++){
-    undoPutinRecord(targets[t].ex);
-    targetState.executions[exKey(expId,targets[t].day)]=targets[t].ex;
+  var rows=computeSchedule(targetState).rows;
+  for(var i=0;i<rows.length;i++){
+    var row=rows[i];
+    if(row.expId!==expId) continue;
+    var ex=row.ex||{};
+    /* D：硬错误——已确认实际放入早于生产日期（仅进行中；已完成绝不处理） */
+    if(ex.putinConfirmed===true && ex.completeConfirmed!==true && ex.putinTime){
+      var putinT=parseDateTime(ex.putinTime);
+      if(putinT && prodKey && ymdOf(putinT)<prodKey){
+        out.push({type:"hard-putin-before-prod",day:row.day,expId:expId,
+          text:"Day"+row.day+" 实际放入时间早于生产日期（历史错误确认）",
+          currentText:"实际放入 "+fmtDT(putinT)+"；生产日期 "+prodKey,
+          ruleText:"实际放入不得早于生产日期；此类记录经确认后可解除并重新排程。",
+          fix:"hard-undo"});
+        continue;   /* 硬错误节点不再重复报计划类异常 */
+      }
+    }
+    if(row.status!=="未放入") continue;
+    var eff=row.effectivePlanPutin, adj=row.adjustedPlanPutin, orig=row.originalPlanPutin;
+    /* A2：节点有效计划放入早于生产日期 */
+    if(eff && prodKey && ymdOf(eff)<prodKey){
+      out.push({type:"plan-putin-before-prod",day:row.day,expId:expId,
+        text:"Day"+row.day+" 计划放入早于生产日期",
+        currentText:"当前计划放入 "+fmtDT(eff)+"；生产日期 "+prodKey,
+        ruleText:"55℃ 计划放入不得早于生产日期（同一天允许）。",
+        fix:adj?"plan-reset":"experiment-edit"});
+      continue;
+    }
+    /* B：旧版提前调整——调整计划早于原计划 */
+    if(adj && orig && adj.getTime()<orig.getTime()){
+      out.push({type:"legacy-advance-adjustment",day:row.day,expId:expId,
+        text:"Day"+row.day+" 使用旧版提前调整",
+        currentText:"当前放入 "+fmtDT(adj)+"；原计划 "+fmtDT(orig),
+        ruleText:"当前规则要求计划放入不得早于原计划（只允许延后）。",
+        fix:"plan-reset"});
+      continue;
+    }
+    /* C：当前有效计划仍卡在不可操作日（复用当前冲突检测） */
+    var summary=build55ConflictSummary(row,targetState);
+    if(summary.conflictReasons.length){
+      var labels={"custom-skip":"自定义跳过","holiday":"法定节假日","weekend":"周末","calendar-unavailable":"节假日数据未覆盖"};
+      var reasonTxt=summary.conflictReasons.map(function(reason){
+        return (reason.action==="putin"?"放入":"取出")+"日（"+(labels[reason.reason]||reason.reason)+"）";
+      }).join("；");
+      out.push({type:"legacy-unavailable-plan",day:row.day,expId:expId,
+        text:"Day"+row.day+" 当前计划存在不可操作日冲突",
+        currentText:reasonTxt,
+        ruleText:"可按当前规则重新计算合法后移方案（不早于当前计划）。",
+        fix:"replan"});
+    }
   }
-  return {ok:true,restored:targets.length,days:targets.map(function(t){ return t.day; })};
+  return out;
 }
-/* 恢复确认弹窗：明确列出节点、清空项与保留项；确认才执行。 */
-function restore55UnfinishedConfirmHTML(exp, days){
-  var daysTxt=days.map(function(d){ return "Day"+d; }).join("、");
-  return '<h3>批量恢复未完成的确认放入</h3><div class="confirmbox">'
-    +'将以下节点恢复为未放入：<br><b>'+esc(daysTxt)+'</b></div>'
-    +'<div class="confirmbox">实际放入时间将清空。<br>计划调整、执行人、备注保留。<br>已完成节点不会处理。</div>'
-    +'<div class="m-foot">'
-    +'<button data-act="restoreUnfinishedYes" data-id="'+esc(exp.id)+'" data-days="'+esc(days.join(","))+'">确认恢复</button>'
-    +'<button class="ghost" data-act="closeModal">取消</button></div>';
+function anomalyListSignature(anomalies){
+  return anomalies.map(function(a){ return a.type+":"+a.day; }).join("|");
 }
-/* 任务08.4：55℃排程区块的试验级恢复入口——仅当存在“进行中未完成”节点时显示。 */
-function exp55RestoreUnfinishedHTML(item, targetState){
+/* 任务08.4重做：执行单项修正（先按当前 state 重检测，异常已消失即拒绝）。
+ * plan-reset → 清除旧版提前调整恢复原计划；replan → 按当前联合推荐原子写入；
+ * hard-undo → 复用 undoPutinRecord 解除错误确认（person/note/adjustedPlanPutin 保留）；
+ * experiment-edit → 不自动改，提示到试验管理修正。 */
+function apply55LegacyRepairFix(targetState, expId, anomaly){
+  if(!targetState || !anomaly || !anomaly.type) return {ok:false,error:"修正参数无效。"};
+  var current=null;
+  var fresh=collect55LegacyPlanAnomalies(targetState,expId);
+  for(var i=0;i<fresh.length;i++){
+    if(fresh[i].type===anomaly.type && fresh[i].day===anomaly.day){ current=fresh[i]; break; }
+  }
+  if(!current) return {ok:false,error:"该异常已不存在或状态已变化，请重新检查。"};
+  if(current.fix==="experiment-edit") return {ok:false,error:"请在试验管理中修正计划放入日期。"};
+  if(current.fix==="plan-reset"){
+    var exR=exOf(targetState,expId,current.day);
+    delete exR.adjustedPlanPutin;
+    targetState.executions[exKey(expId,current.day)]=exR;
+    return {ok:true,action:"plan-reset",day:current.day};
+  }
+  if(current.fix==="hard-undo"){
+    var exH=exOf(targetState,expId,current.day);
+    if(exH.putinConfirmed!==true || exH.completeConfirmed===true) return {ok:false,error:"节点状态已变化，不能解除确认。"};
+    undoPutinRecord(exH);
+    targetState.executions[exKey(expId,current.day)]=exH;
+    return {ok:true,action:"hard-undo",day:current.day};
+  }
+  if(current.fix==="replan"){
+    var plan=build55GroupedConflictSuggestions(computeSchedule(targetState).rows,targetState,{expId:expId});
+    if(!plan) return {ok:false,error:"当前没有可应用的推荐方案。"};
+    var result=apply55GroupedSuggestionPlan(targetState,expId,plan);
+    if(!result.ok) return result;
+    return {ok:true,action:"replan",applied:result.applied,days:result.changes.map(function(c){ return c.day; })};
+  }
+  return {ok:false,error:"该异常无需自动修正。"};
+}
+/* 修正弹窗：逐项展示 异常原因/当前值/当前规则/推荐处理，按异常类型给出对应按钮。 */
+function legacy55RepairModalHTML(exp, anomalies){
+  var html='<h3>检查并修正历史计划异常</h3>';
+  for(var i=0;i<anomalies.length;i++){
+    var a=anomalies[i], dayTag=a.day!=null?"Day"+a.day+" ":"";
+    html+='<div class="confirmbox"><b>'+(i+1)+'. '+esc(dayTag+a.text)+'</b><br>'
+      +'当前值：'+esc(a.currentText)+'<br>'
+      +'当前规则：'+esc(a.ruleText)+'<br>';
+    if(a.fix==="plan-reset" || a.fix==="replan"){
+      html+='推荐处理：按当前规则修正<br>'
+        +'<button data-act="legacyRepairPlanFix" data-id="'+esc(exp.id)+'" data-type="'+esc(a.type)+'" data-day="'+(a.day!=null?a.day:"")+'">采用当前规则修正</button>';
+    }else if(a.fix==="hard-undo"){
+      html+='推荐处理：解除错误确认并重新排程<br>'
+        +'<button class="danger" data-act="legacyRepairHardFix" data-id="'+esc(exp.id)+'" data-day="'+a.day+'">解除错误确认并重新排程</button>'
+        +'<div class="muted">将清除该节点错误的实际放入确认及实际放入时间。执行人/备注保留。</div>';
+    }else{
+      html+='推荐处理：到“试验管理”修正计划放入日期';
+    }
+    html+='</div>';
+  }
+  return html+'<div class="m-foot"><button class="ghost" data-act="closeModal">关闭</button></div>';
+}
+/* 任务08.4重做：55℃排程区块的历史异常摘要入口——仅当检测到明确异常时显示。 */
+function exp55LegacyAnomaliesHTML(item, targetState){
   if(!item || item.kind!=="ok" || !item.exp || item.exp.condition==="36±1℃") return "";
-  var days=collect55RestorablePutinDays(targetState, item.exp.id);
-  if(!days.length) return "";
-  var daysTxt=days.map(function(d){ return "Day"+d; }).join("、");
-  return '<div class="operation-date-note" style="display:block;margin:6px 0">'
-    +'有 '+days.length+' 个进行中未完成节点（'+esc(daysTxt)+'）'
-    +'<button class="mini" data-act="restoreUnfinishedOpen" data-id="'+esc(item.exp.id)+'" data-days="'+esc(days.join(","))+'">批量恢复未完成的确认放入</button>'
+  var anomalies=collect55LegacyPlanAnomalies(targetState,item.exp.id);
+  if(!anomalies.length) return "";
+  var html='<div class="operation-date-note conflict" style="display:block;margin:6px 0">'
+    +'⚠ 发现历史计划异常 '+anomalies.length+' 项<ol style="margin:2px 0 4px 18px">';
+  for(var i=0;i<anomalies.length;i++){
+    var a=anomalies[i];
+    html+='<li>'+esc((a.day!=null?"Day"+a.day+" ":"")+a.text)+'：'+esc(a.currentText)+'</li>';
+  }
+  return html+'</ol>'
+    +'<button class="mini" data-act="legacyRepairOpen" data-id="'+esc(item.exp.id)+'" data-anoms="'+esc(anomalyListSignature(anomalies))+'">检查并修正</button>'
     +'</div>';
+}
+/* 任务08.4重做：plan/modal 共用触发入口——按当前 state 重检测，列表签名变化即拒绝。 */
+function open55LegacyRepairFromTrigger(t){
+  var id=t.getAttribute("data-id");
+  if(!id) return;
+  var exp=findExp(id);
+  if(!exp) return;
+  var anomalies=collect55LegacyPlanAnomalies(state,exp.id);
+  var sig=t.getAttribute("data-anoms")||"";
+  if(!anomalies.length || anomalyListSignature(anomalies)!==sig){
+    showToast("计划状态已变化，请重新查看。", true); return;
+  }
+  openModal(legacy55RepairModalHTML(exp, anomalies));
 }
 /* 任务08.2：plan / today / modal 三处共用的“采用推荐方案”触发入口。
  * 按当前 state 重算推荐方案 → 签名校验 → 全量校验 → 打开确认弹窗（任务08流程）。 */
@@ -3224,27 +3327,22 @@ function onModalClick(ev){
     showToast("已采用推荐方案：调整 "+resultYes.changes.length+" 个节点 ✓");
     return;
   }
-  if(act==="restoreUnfinishedOpen"){
-    /* 任务08.4：打开恢复确认弹窗前按当前 state 重收集，状态已变化则拒绝 */
-    var freshOpen=collect55RestorablePutinDays(state,exp.id);
-    var openDays=t.getAttribute("data-days")||"";
-    if(!freshOpen.length || freshOpen.join(",")!==openDays){
-      showToast("节点状态已变化，请重新查看。", true); return;
+  if(act==="legacyRepairPlanFix" || act==="legacyRepairHardFix"){
+    /* 任务08.4重做：执行单项修正前按当前 state 重检测，异常已消失或状态变化即拒绝 */
+    var anomaly={type:t.getAttribute("data-type")||"",day:t.getAttribute("data-day")?+t.getAttribute("data-day"):null};
+    var freshL=collect55LegacyPlanAnomalies(state,exp.id), currentL=null;
+    for(var li=0;li<freshL.length;li++){
+      if(freshL[li].type===anomaly.type && freshL[li].day===anomaly.day){ currentL=freshL[li]; break; }
     }
-    openModal(restore55UnfinishedConfirmHTML(exp, freshOpen));
-    return;
-  }
-  if(act==="restoreUnfinishedYes"){
-    /* 确认恢复：再次重收集并全量校验，全部合法才一次性执行 */
-    var freshYes=collect55RestorablePutinDays(state,exp.id);
-    var yesDays=t.getAttribute("data-days")||"";
-    if(!freshYes.length || freshYes.join(",")!==yesDays){
-      showToast("节点状态已变化，请重新查看。", true); return;
-    }
-    var resultR=apply55RestoreUnfinishedPutins(state,exp.id,freshYes);
-    if(!resultR.ok){ showToast(resultR.error, true); return; }
+    if(!currentL){ showToast("该异常已不存在或状态已变化，请重新检查。", true); return; }
+    if(act==="legacyRepairHardFix" && currentL.fix!=="hard-undo"){ showToast("该节点不是可解除的错误确认记录。", true); return; }
+    if(act==="legacyRepairPlanFix" && currentL.fix!=="plan-reset" && currentL.fix!=="replan"){ showToast("该异常不能自动修正。", true); return; }
+    var resultL=apply55LegacyRepairFix(state,exp.id,currentL);
+    if(!resultL.ok){ showToast(resultL.error, true); return; }
     saveState(); closeModal(); renderCurrent();
-    showToast("已恢复 "+resultR.restored+" 个节点为未放入 ✓");
+    if(resultL.action==="replan") showToast("已按当前规则修正 "+resultL.applied+" 个节点 ✓");
+    else if(resultL.action==="hard-undo") showToast("Day"+resultL.day+" 已解除错误确认，可重新排程 ✓");
+    else showToast("Day"+resultL.day+" 已恢复原计划，可用当前规则重新调整 ✓");
     return;
   }
   if(day!==null && act==="nodeSave"){
@@ -3604,8 +3702,8 @@ function planHTML(sch, st){
       }
       /* 任务08.1：试验级冲突摘要（未放入冲突节点数量与 Day 列表 + 联合调整建议入口） */
       html += exp55ConflictSummaryHTML(it, st);
-      /* 任务08.4：试验级“批量恢复未完成的确认放入”入口（仅存在进行中未完成节点时显示） */
-      html += exp55RestoreUnfinishedHTML(it, st);
+      /* 任务08.4重做：试验级历史计划异常摘要（仅检测到明确逻辑异常时显示） */
+      html += exp55LegacyAnomaliesHTML(it, st);
       /* 批次摘要（V0.5.4：标题“待放入批次”，只列仍未放入的节点）：一行一个批次 */
       if(it.batches.length){
         html += '<div class="batlines"><div class="batch-title">待放入批次</div>';
@@ -3785,6 +3883,8 @@ function onPlanClick(ev){
   }
   /* 任务08.2：试验级【查看联合调整建议】按钮不带 data-day，须在 day 拦截前处理 */
   if(act==="groupedApplyOpen"){ open55GroupedApplyFromTrigger(t); return; }
+  /* 任务08.4重做：【检查并修正】在 planBody 渲染，须在本 handler（而非仅 onModalClick）处理 */
+  if(act==="legacyRepairOpen"){ open55LegacyRepairFromTrigger(t); return; }
   if(day===null) return;
   if(act==="adjustPlan"){
     var sch = computeSchedule({opTime:state.opTime, experiments:[exp], executions:state.executions});

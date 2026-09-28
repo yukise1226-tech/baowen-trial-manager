@@ -19,7 +19,7 @@
 - 任务08.1已完成：修正建议入口触发条件——未确认放入节点按 `build55ConflictSummary` 完整结果判断（放入或取出任一不可操作即显示冲突提示与调整建议，不再只检查当前显示的放入时间）；待放入行内联提示对应计划取出日期的冲突；排程页新增试验级冲突摘要（“当前计划存在 N 个不可操作日冲突：Day…”，【查看联合调整建议】复用任务08确认采用流程，不建第二套算法）。
 - 任务08.2已完成：修复采用入口事件绑定——抽出共享入口 `open55GroupedApplyFromTrigger(t)`（重算→签名校验→全量校验→打开确认弹窗），排程页/操作日程/弹窗三处 `groupedApplyOpen` 统一走该 helper（在 `day===null` 拦截之前处理）；`groupedApplyYes` 仍在弹窗内独立处理。未动联合建议算法、validate/apply 逻辑与各协议。
 - 任务08.3已完成：55℃调整禁止提前放入——候选生成源头 `suggest55ConflictAlternatives` 只向后搜索（offsetDays>0）；Day<7 改为最早合法后移，Day>=7 窗口内仅后移并优先减少批次；联合建议改名为“延后集中”。`validate55GroupedSuggestionPlanForApply` 新增第二道防线：推荐放入早于该节点当前有效计划即整组拒绝。scheduleBatches、实际时间、36℃、schemaVersion、云同步协议均未动。
-- 任务08.4已完成：55℃“进行中但未完成”节点可安全恢复为未放入——纯 helper `collect55RestorablePutinDays` / `apply55RestoreUnfinishedPutins`（先全量校验、原子执行、已完成节点混入即整组拒绝），复用既有 `undoPutinRecord` 语义（putinConfirmed=false、putinTime 清空、adjustedExpectedTakeout 清空；person/note/adjustedPlanPutin 保留）。排程页新增试验级【批量恢复未完成的确认放入】入口（确认弹窗列节点/清空项/保留项）；单节点撤销放入沿用现有操作日程入口。恢复后节点回到未放入，可继续调整计划、重新进入联合建议与采用流程。不做自动迁移、不按版本猜测测试数据、36℃/schemaVersion/云同步协议不变。
+- 任务08.4重做已完成：历史计划异常检测与修正（替换早先“批量恢复进行中节点”的错误方向）——纯检测层 `collect55LegacyPlanAnomalies(state, expId)` 只按“数据违反当前业务不变量”识别明确逻辑异常：试验/节点计划放入早于生产日期、旧版提前调整（adjustedPlanPutin < originalPlanPutin）、未执行节点的有效计划仍落在不可操作日、已确认实际放入早于生产日期（硬错误）；正常执行事实（已完成、进行中且实际放入≥生产日期）绝不进入。排程页显示“⚠ 发现历史计划异常 N 项 +【检查并修正】”，弹窗逐项展示原因/当前值/当前规则/推荐处理：纯计划异常【采用当前规则修正】（清除提前调整或按当前联合建议原子写入 adjustedPlanPutin），硬错误【解除错误确认并重新排程】（复用 undoPutinRecord，执行人/备注保留，需用户明确确认）。不按版本号判断、不批量清确认、不改事实字段、已完成绝不处理；新建试验 putinDate<prodDate 由既有排程校验阻止。
 
 ## Cloudflare 云同步 PoC：已完成真实后端联调
 
