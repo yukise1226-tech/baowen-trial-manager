@@ -72,6 +72,10 @@ td .cellwrap{min-width:96px;}
 .operation-suggestion-box ul{margin:5px 0 0;padding-left:18px;}
 .operation-suggestion-box li{margin:2px 0;}
 .operation-suggestion-warning{color:var(--amber);font-weight:600;margin-top:4px;}
+.operation-suggestion-joint{margin-top:7px;padding-top:7px;border-top:1px dashed var(--line);}
+.operation-suggestion-joint-title{color:var(--green);font-weight:700;}
+.operation-suggestion-joint-group{margin-top:5px;padding:5px 7px;border-radius:6px;background:#f7fbff;}
+.operation-suggestion-joint-alt{margin-top:6px;}
 .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;}
 .badge.ok{background:var(--green-bg);color:var(--green);}
 .badge.draft{background:var(--amber-bg);color:var(--amber);}
@@ -525,6 +529,204 @@ function build55ConflictSummary(row, targetState, options){
     candidates:candidates
   };
 }
+
+/* 55℃多节点联合建议：只读取当前排程行与任务06候选，不改写 row/state。
+ * Day<7 独立选择合理的小幅候选；Day>=7 在 7 天合理窗口内优先节前提前，
+ * 再尽量减少共同放入日期。备选方案仅按单节点总偏移最小选择。 */
+function isUnconfirmed55SuggestionRow(row){
+  if(!row || row.enabled===false || row.status==="不做") return false;
+  if(row.ex && row.ex.putinConfirmed===true) return false;
+  return row.status!=="进行中" && row.status!=="已完成";
+}
+function preferred55AdvanceCandidate(summary, maxOffsetDays){
+  var candidates=summary&&summary.candidates||[], limit=Math.max(1,Math.floor(+maxOffsetDays||7));
+  for(var i=0;i<candidates.length;i++){
+    if(candidates[i].offsetDays<0 && Math.abs(candidates[i].offsetDays)<=limit) return candidates[i];
+  }
+  return candidates.length?candidates[0]:null;
+}
+function reasonable55GroupedCandidates(summary, maxOffsetDays){
+  var candidates=summary&&summary.candidates||[], limit=Math.max(1,Math.floor(+maxOffsetDays||7));
+  var advances=[], nearby=[];
+  for(var i=0;i<candidates.length;i++){
+    if(Math.abs(candidates[i].offsetDays)<=limit){
+      nearby.push(candidates[i]);
+      if(candidates[i].offsetDays<0) advances.push(candidates[i]);
+    }
+  }
+  /* “能合理提前完成的优先提前”高于批次数与总偏移；没有合理提前时才允许节后候选。 */
+  if(advances.length) return advances;
+  if(nearby.length) return nearby;
+  return candidates.length?[candidates[0]]:[];
+}
+function assignmentFor55Dates(conflicts, candidateLists, selectedTimes){
+  var selected={}, entries=[], total=0, maxAbs=0;
+  for(var s=0;s<selectedTimes.length;s++) selected[selectedTimes[s]]=true;
+  for(var i=0;i<conflicts.length;i++){
+    var best=null, list=candidateLists[i]||[];
+    for(var c=0;c<list.length;c++){
+      if(!selected[list[c].putin.getTime()]) continue;
+      if(!best || Math.abs(list[c].offsetDays)<Math.abs(best.offsetDays)
+        || (Math.abs(list[c].offsetDays)===Math.abs(best.offsetDays) && list[c].offsetDays>best.offsetDays)) best=list[c];
+    }
+    if(!best) return null;
+    var abs=Math.abs(best.offsetDays);
+    entries.push({summary:conflicts[i],candidate:best});
+    total+=abs;
+    if(abs>maxAbs) maxAbs=abs;
+  }
+  return {entries:entries,totalAbsOffsetDays:total,maxAbsOffsetDays:maxAbs};
+}
+function greedy55GroupedAssignment(conflicts, candidateLists){
+  var remaining=[], chosen=[];
+  for(var i=0;i<conflicts.length;i++) remaining.push(i);
+  while(remaining.length){
+    var options={}, optionOrder=[];
+    for(var r=0;r<remaining.length;r++){
+      var idx=remaining[r], list=candidateLists[idx]||[];
+      for(var c=0;c<list.length;c++){
+        var key=list[c].putin.getTime();
+        if(!options[key]){ options[key]={time:key,cover:[],offsetTotal:0}; optionOrder.push(key); }
+        if(options[key].cover.indexOf(idx)<0){
+          options[key].cover.push(idx); options[key].offsetTotal+=Math.abs(list[c].offsetDays);
+        }
+      }
+    }
+    if(!optionOrder.length) break;
+    optionOrder.sort(function(a,b){
+      var aa=options[a], bb=options[b];
+      return bb.cover.length-aa.cover.length || aa.offsetTotal-bb.offsetTotal || b-a;
+    });
+    var pick=options[optionOrder[0]];
+    chosen.push(pick.time);
+    remaining=remaining.filter(function(idx){ return pick.cover.indexOf(idx)<0; });
+  }
+  return assignmentFor55Dates(conflicts,candidateLists,chosen);
+}
+function best55GroupedAssignment(conflicts, candidateLists){
+  if(!conflicts.length) return {entries:[],totalAbsOffsetDays:0,maxAbsOffsetDays:0};
+  var seen={}, times=[];
+  for(var i=0;i<candidateLists.length;i++){
+    for(var c=0;c<candidateLists[i].length;c++){
+      var time=candidateLists[i][c].putin.getTime();
+      if(!seen[time]){ seen[time]=true; times.push(time); }
+    }
+  }
+  times.sort(function(a,b){ return b-a; });
+  /* 常规试验规模用穷举保证“批次数优先、再总偏移”；极端规模安全降级为贪心覆盖。 */
+  if(conflicts.length>12 || times.length>18) return greedy55GroupedAssignment(conflicts,candidateLists);
+  var best=null;
+  function compare(candidate){
+    if(!candidate) return;
+    if(!best || candidate.totalAbsOffsetDays<best.totalAbsOffsetDays
+      || (candidate.totalAbsOffsetDays===best.totalAbsOffsetDays && candidate.maxAbsOffsetDays<best.maxAbsOffsetDays)) best=candidate;
+  }
+  function choose(start, need, selected){
+    if(need===0){ compare(assignmentFor55Dates(conflicts,candidateLists,selected)); return; }
+    for(var t=start;t<=times.length-need;t++){
+      selected.push(times[t]); choose(t+1,need-1,selected); selected.pop();
+    }
+  }
+  for(var count=1;count<=Math.min(conflicts.length,times.length);count++){
+    best=null; choose(0,count,[]);
+    if(best) return best;
+  }
+  return null;
+}
+function groupsFrom55SuggestionEntries(entries){
+  var groups={}, order=[];
+  for(var i=0;i<entries.length;i++){
+    var entry=entries[i], candidate=entry.candidate, day=entry.summary.day;
+    /* 短/长周期分开做选择；若最终恰好同一时刻放入，展示时按真实批次自然合并。 */
+    var key=String(candidate.putin.getTime());
+    if(!groups[key]){
+      groups[key]={putin:new Date(candidate.putin),days:[],takeouts:[],offsets:[]}; order.push(key);
+    }
+    groups[key].days.push(day);
+    groups[key].takeouts.push(new Date(candidate.takeout));
+    groups[key].offsets.push(candidate.offsetDays);
+  }
+  var out=order.map(function(key){ return groups[key]; });
+  out.forEach(function(group){
+    var zipped=[];
+    for(var i=0;i<group.days.length;i++) zipped.push({day:group.days[i],takeout:group.takeouts[i],offset:group.offsets[i]});
+    zipped.sort(function(a,b){ return a.day-b.day; });
+    group.days=zipped.map(function(x){ return x.day; });
+    group.takeouts=zipped.map(function(x){ return x.takeout; });
+    group.offsets=zipped.map(function(x){ return x.offset; });
+  });
+  out.sort(function(a,b){ return a.putin-b.putin || a.days[0]-b.days[0]; });
+  return out;
+}
+function make55GroupedPlan(expId, conflicts, entries, strategy, explanation){
+  var groups=groupsFrom55SuggestionEntries(entries), total=0, advances=0, delays=0, coverageWarning="";
+  for(var i=0;i<entries.length;i++){
+    var candidate=entries[i].candidate;
+    total+=Math.abs(candidate.offsetDays);
+    if(candidate.offsetDays<0) advances++;
+    else if(candidate.offsetDays>0) delays++;
+    if(!candidate.holidayCoverageSufficient) coverageWarning="官方节假日覆盖不足";
+  }
+  for(var c=0;c<conflicts.length;c++) if(conflicts[c].coverageWarning) coverageWarning="官方节假日覆盖不足";
+  return {expId:expId,conflicts:conflicts,groups:groups,batchCount:groups.length,
+    totalAbsOffsetDays:total,advanceCount:advances,delayCount:delays,
+    coverageWarning:coverageWarning,strategy:strategy,explanation:explanation};
+}
+function grouped55PlanSignature(plan){
+  return (plan.groups||[]).map(function(group){
+    return group.putin.getTime()+":"+group.days.join(",");
+  }).join("|");
+}
+function build55GroupedConflictSuggestions(rows, targetState, options){
+  var opts=options&&typeof options==="object"?options:{}, source=Array.isArray(rows)?rows:[];
+  var expId=opts.expId||(source[0]&&source[0].expId)||"", maxOffset=+opts.maxReasonableOffsetDays;
+  if(!isFinite(maxOffset)||maxOffset<1) maxOffset=7;
+  maxOffset=Math.floor(maxOffset);
+  var conflicts=[];
+  for(var i=0;i<source.length;i++){
+    var row=source[i];
+    if((expId && row.expId!==expId) || !isUnconfirmed55SuggestionRow(row)) continue;
+    var summary=build55ConflictSummary(row,targetState,opts);
+    if(summary.conflictReasons.length) conflicts.push(summary);
+  }
+  conflicts.sort(function(a,b){ return a.day-b.day; });
+  if(!conflicts.length) return null;
+
+  var shortConflicts=[], longConflicts=[];
+  for(var c=0;c<conflicts.length;c++) (conflicts[c].day<7?shortConflicts:longConflicts).push(conflicts[c]);
+  var recommendedEntries=[], unresolved=0;
+  for(var s=0;s<shortConflicts.length;s++){
+    var shortCandidate=preferred55AdvanceCandidate(shortConflicts[s],maxOffset);
+    if(shortCandidate) recommendedEntries.push({summary:shortConflicts[s],candidate:shortCandidate});
+    else unresolved++;
+  }
+  if(longConflicts.length){
+    var usableLong=[], candidateLists=[];
+    for(var l=0;l<longConflicts.length;l++){
+      var list=reasonable55GroupedCandidates(longConflicts[l],maxOffset);
+      if(list.length){ usableLong.push(longConflicts[l]); candidateLists.push(list); }
+      else unresolved++;
+    }
+    var grouped=best55GroupedAssignment(usableLong,candidateLists);
+    if(grouped) recommendedEntries=recommendedEntries.concat(grouped.entries);
+    else unresolved+=usableLong.length;
+  }
+  var explanation="优先采用 "+maxOffset+" 天内可行的节前提前候选；Day<7 独立处理，Day≥7 在合理偏移内减少放入批次。";
+  if(unresolved) explanation+=" 另有 "+unresolved+" 个冲突节点未找到可行候选。";
+  var recommended=make55GroupedPlan(expId,conflicts,recommendedEntries,"advance-grouped",explanation);
+
+  var minimumEntries=[];
+  for(var m=0;m<conflicts.length;m++) if(conflicts[m].candidates.length){
+    minimumEntries.push({summary:conflicts[m],candidate:conflicts[m].candidates[0]});
+  }
+  var minimum=make55GroupedPlan(expId,conflicts,minimumEntries,"minimum-offset",
+    "各节点采用 |offsetDays| 最小的候选；总偏移较小，但可能增加放入批次或包含节后日期。");
+  recommended.alternatives=[];
+  if(minimumEntries.length===recommendedEntries.length && grouped55PlanSignature(minimum)!==grouped55PlanSignature(recommended)){
+    recommended.alternatives.push(minimum);
+  }
+  return recommended;
+}
 function nextOperationDateAtOrAfter(dt, rules){
   if(!(dt instanceof Date) || isNaN(dt.getTime())) return null;
   var next=new Date(dt);
@@ -679,6 +881,31 @@ function operationDateStatusHTML(dt, targetState){
   }
   return html;
 }
+function offset55Text(offset){
+  return offset>0?"延后 "+offset+" 天":"提前 "+Math.abs(offset)+" 天";
+}
+function operation55GroupedPlanHTML(plan, title){
+  if(!plan || !plan.groups || !plan.groups.length) return "";
+  var html='<div class="operation-suggestion-joint"><div class="operation-suggestion-joint-title">'+esc(title)+'</div>'
+    +'<div>总批次数：'+plan.batchCount+'；总 |偏移| '+plan.totalAbsOffsetDays+' 天；提前 '+plan.advanceCount+' 个，延后 '+plan.delayCount+' 个。</div>';
+  if(plan.coverageWarning){
+    html+='<div class="operation-suggestion-warning">⚠ '+esc(plan.coverageWarning)+'；联合建议仅按已知规则筛选，不能视为完整确认。</div>';
+  }
+  for(var i=0;i<plan.groups.length;i++){
+    var group=plan.groups[i], details=[];
+    for(var d=0;d<group.days.length;d++){
+      details.push('Day'+group.days[d]+' 取出 '+fmtDT(group.takeouts[d])+'（'+offset55Text(group.offsets[d])+'）');
+    }
+    html+='<div class="operation-suggestion-joint-group"><b>Day'+esc(group.days.join('、Day'))+'</b> 一起放入：'
+      +esc(fmtDT(group.putin))+'<br>'+esc(details.join('；'))+'</div>';
+  }
+  return html+'<div class="muted" style="margin-top:4px">'+esc(plan.explanation)+'</div></div>';
+}
+function rows55ForGroupedSuggestion(row, targetState){
+  if(!row || !targetState || !Array.isArray(targetState.experiments)) return row?[row]:[];
+  var rows=computeSchedule(targetState).rows.filter(function(candidate){ return candidate.expId===row.expId; });
+  return rows.length?rows:[row];
+}
 function operation55SuggestionHTML(row, targetState, conflictTime){
   if(!conflictTime) return "";
   var conflictStatus=operationDateStatus(conflictTime,targetState);
@@ -690,12 +917,22 @@ function operation55SuggestionHTML(row, targetState, conflictTime){
   if(summary.coverageWarning){
     html+='<div class="operation-suggestion-warning">⚠ '+esc(summary.coverageWarning)+'；候选仅按周末与自定义跳过日等已知规则筛选。</div>';
   }
-  html+='<ul>';
+  html+='<div style="margin-top:5px"><b>单节点候选</b></div><ul>';
   for(var i=0;i<candidates.length;i++){
-    var c=candidates[i], offsetText=c.offsetDays>0?'延后 '+c.offsetDays+' 天':'提前 '+Math.abs(c.offsetDays)+' 天';
+    var c=candidates[i], offsetText=offset55Text(c.offsetDays);
     html+='<li><b>'+esc(offsetText)+'</b>：放入 '+esc(fmtDT(c.putin))+' → 取出 '+esc(fmtDT(c.takeout))+'</li>';
   }
-  return html+'</ul></div></details>';
+  html+='</ul>';
+  var grouped=isUnconfirmed55SuggestionRow(row)
+    ? build55GroupedConflictSuggestions(rows55ForGroupedSuggestion(row,targetState),targetState,{expId:row.expId}) : null;
+  if(grouped){
+    html+=operation55GroupedPlanHTML(grouped,'联合建议｜推荐：节前优先集中');
+    if(grouped.alternatives&&grouped.alternatives.length){
+      html+='<details class="operation-suggestion-joint-alt"><summary>联合建议备选：最小总偏移</summary>'
+        +operation55GroupedPlanHTML(grouped.alternatives[0],'备选方案｜最小总偏移')+'</details>';
+    }
+  }
+  return html+'</div></details>';
 }
 /* Date → datetime-local 文本（调整计划弹窗用） */
 function fmtDL(dt){ return ymdOf(dt)+"T"+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
