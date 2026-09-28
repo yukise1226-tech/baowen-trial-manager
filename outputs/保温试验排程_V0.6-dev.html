@@ -399,6 +399,27 @@ function isWeekend(dt){ var w=dt.getDay(); return w===0||w===6; }
 function weekdayName(dt){ return ["周日","周一","周二","周三","周四","周五","周六"][dt.getDay()]; }
 function firstWorkdayAtOrAfter(dt){ var d=new Date(dt); while(isWeekend(d)) d=addDays(d,1); return d; }
 function ymdOf(dt){ return formatYMD(dt.getFullYear(), dt.getMonth()+1, dt.getDate()); }
+
+/* V0.7 日期可操作性纯规则层；holidayDates 预留给未来节假日数据源注入，本层不获取外部数据。 */
+function operationDateSetHas(dateSet, dateKey){
+  if(!dateSet) return false;
+  if(typeof dateSet.has==="function") return dateSet.has(dateKey);
+  return Array.isArray(dateSet) && dateSet.indexOf(dateKey)>=0;
+}
+function isOperationDateAvailable(dt, rules){
+  if(!(dt instanceof Date) || isNaN(dt.getTime())) return false;
+  if(isWeekend(dt)) return false;
+  var opts=rules||{}, dateKey=ymdOf(dt);
+  return !operationDateSetHas(opts.customSkipDates,dateKey)
+    && !operationDateSetHas(opts.holidayDates,dateKey);
+}
+function nextOperationDateAtOrAfter(dt, rules){
+  if(!(dt instanceof Date) || isNaN(dt.getTime())) return null;
+  var next=new Date(dt);
+  while(!isOperationDateAvailable(next,rules)) next=addDays(next,1);
+  return next;
+}
+
 function fmtDT(dt){ return ymdOf(dt)+" "+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
 function fmtCN(dt){ return (dt.getMonth()+1)+"月"+dt.getDate()+"日 "+weekdayName(dt)+" "+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
 /* 紧凑时间显示（主行用）：09-22 10:00；完整信息（含年份/星期）在 title 与详情 */
