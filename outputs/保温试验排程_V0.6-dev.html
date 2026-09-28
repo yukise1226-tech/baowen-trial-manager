@@ -685,11 +685,12 @@ function groupsFrom55SuggestionEntries(entries){
  * latestTakeout=所有被调整节点最晚取出；terminalDay=冲突节点中最大 Day；
  * terminalTakeout=最高 Day 对应取出；totalDelayDays/maxDelayDays 按后移天数计。 */
 function metricsFor55Assignment(entries, batchCount){
-  var latestTakeout=null, terminalDay=null, terminalTakeout=null, totalDelay=0, maxDelay=0;
+  var latestTakeout=null, terminalDay=null, terminalTakeout=null, totalDelay=0, maxDelay=0, takeoutTimes=[];
   for(var i=0;i<entries.length;i++){
     var candidate=entries[i].candidate, takeout=candidate.takeout, abs=Math.abs(candidate.offsetDays);
     totalDelay+=abs;
     if(abs>maxDelay) maxDelay=abs;
+    takeoutTimes.push(takeout.getTime());
     if(!latestTakeout || takeout.getTime()>latestTakeout.getTime()) latestTakeout=new Date(takeout);
     if(terminalDay==null || entries[i].summary.day>terminalDay) terminalDay=entries[i].summary.day;
   }
@@ -701,8 +702,9 @@ function metricsFor55Assignment(entries, batchCount){
       }
     }
   }
+  takeoutTimes.sort(function(a,b){ return a-b; });
   return {latestTakeout:latestTakeout,terminalDay:terminalDay,terminalTakeout:terminalTakeout,
-    batchCount:batchCount,totalDelayDays:totalDelay,maxDelayDays:maxDelay};
+    batchCount:batchCount,totalDelayDays:totalDelay,maxDelayDays:maxDelay,takeoutTimes:takeoutTimes};
 }
 /* 增加批次需至少提前的天数，才算“明显时间收益”（避免为 1 天拆批次） */
 var EARLIER_COMPLETION_MIN_DAYS=2;
@@ -713,6 +715,12 @@ function compare55FinalAssignment(a,b){
   var ta=ma.terminalTakeout?ma.terminalTakeout.getTime():0, tb=mb.terminalTakeout?mb.terminalTakeout.getTime():0;
   if(ta!==tb) return ta-tb;
   if(ma.batchCount!==mb.batchCount) return ma.batchCount-mb.batchCount;
+  /* 任务09.2：时间与批次相同时，优先更早的各节点 takeout（升序列表逐项比较） */
+  var sortA=ma.takeoutTimes||[], sortB=mb.takeoutTimes||[];
+  for(var i=0;i<Math.min(sortA.length,sortB.length);i++){
+    if(sortA[i]!==sortB[i]) return sortA[i]-sortB[i];
+  }
+  if(sortA.length!==sortB.length) return sortA.length-sortB.length;
   if(ma.totalDelayDays!==mb.totalDelayDays) return ma.totalDelayDays-mb.totalDelayDays;
   return ma.maxDelayDays-mb.maxDelayDays;
 }
@@ -824,10 +832,10 @@ function build55GroupedConflictSuggestions(rows, targetState, options){
 
   var shortConflicts=[], longConflicts=[];
   for(var c=0;c<conflicts.length;c++) (conflicts[c].day<7?shortConflicts:longConflicts).push(conflicts[c]);
-  var recommendedEntries=[], unresolved=0;
+  var shortEntries=[], unresolved=0;
   for(var s=0;s<shortConflicts.length;s++){
     var shortCandidate=earliest55Candidate(shortConflicts[s]);
-    if(shortCandidate) recommendedEntries.push({summary:shortConflicts[s],candidate:shortCandidate});
+    if(shortCandidate) shortEntries.push({summary:shortConflicts[s],candidate:shortCandidate});
     else unresolved++;
   }
   var usableLong=[], candidateLists=[];
@@ -837,25 +845,36 @@ function build55GroupedConflictSuggestions(rows, targetState, options){
       if(list.length){ usableLong.push(longConflicts[l]); candidateLists.push(list); }
       else unresolved++;
     }
-    /* 任务09：推荐 = 最终完成最早优先（批次数最多比最少批次多 1 且需有明显时间收益） */
-    var recommendedLong=best55FinalGroupedAssignment(usableLong,candidateLists);
-    if(recommendedLong) recommendedEntries=recommendedEntries.concat(recommendedLong.entries);
-    else unresolved+=usableLong.length;
   }
-  var explanation="候选不早于生产日期（允许相对当前计划提前）；优先缩短最终完成时间（最高 Day 尽量早），批次数最多比最少批次方案多 1。";
+  /* 任务09.2：长周期优化必须复用短周期已选中的放入批次——
+   * 短周期节点以“单一固定候选”并入同一优化器，其放入时间成为已存在的免费批次，
+   * 长周期节点加入该日期不增加总体 batchCount；备选最少批次方案同样按真实批次计算。 */
+  var fullConflicts=shortConflicts.filter(function(sc){ return sc.candidates.length>0; });
+  var fullLists=shortEntries.map(function(entry){ return [entry.candidate]; });
+  for(var lf=0;lf<usableLong.length;lf++){
+    fullConflicts.push(usableLong[lf]);
+    fullLists.push(candidateLists[lf]);
+  }
+  var recommendedEntries=[];
+  if(fullConflicts.length){
+    /* 任务09：推荐 = 最终完成最早优先（批次数最多比最少批次多 1 且需有明显时间收益） */
+    var recommendedFull=best55FinalGroupedAssignment(fullConflicts,fullLists);
+    if(recommendedFull) recommendedEntries=recommendedFull.entries;
+    else{ recommendedEntries=shortEntries.slice(); unresolved+=usableLong.length; }
+  }else{
+    recommendedEntries=shortEntries.slice();
+  }
+  var explanation="候选不早于生产日期（允许相对当前计划提前）；优先缩短最终完成时间（最高 Day 尽量早），并复用已有放入批次，批次数最多比最少批次方案多 1。";
   if(unresolved) explanation+=" 另有 "+unresolved+" 个冲突节点未找到可行候选。";
   var recommended=make55GroupedPlan(expId,conflicts,recommendedEntries,"delay-grouped",explanation);
 
-  /* 任务09：备选改为“最少批次方案”对照；完全相同则不显示 */
+  /* 任务09：备选改为“最少批次方案”对照（同样按含短周期批次在内的真实批次数）；完全相同则不显示 */
   var minBatchEntries=[];
-  for(var s2=0;s2<shortConflicts.length;s2++){
-    var shortAlt=earliest55Candidate(shortConflicts[s2]);
-    if(shortAlt) minBatchEntries.push({summary:shortConflicts[s2],candidate:shortAlt});
+  if(fullConflicts.length){
+    var minBatchFull=best55GroupedAssignment(fullConflicts,fullLists);
+    if(minBatchFull) minBatchEntries=minBatchFull.entries;
   }
-  if(usableLong.length){
-    var minBatchLong=best55GroupedAssignment(usableLong,candidateLists);
-    if(minBatchLong) minBatchEntries=minBatchEntries.concat(minBatchLong.entries);
-  }
+  if(!minBatchEntries.length) minBatchEntries=shortEntries.slice();
   var minimumBatch=make55GroupedPlan(expId,conflicts,minBatchEntries,"minimum-batch",
     "对照：最少批次方案（放入批次最少，最终完成可能更晚）。");
   recommended.alternatives=[];
