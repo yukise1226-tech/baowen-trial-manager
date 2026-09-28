@@ -649,6 +649,109 @@ function groupsFrom55SuggestionEntries(entries){
   out.sort(function(a,b){ return a.putin-b.putin || a.days[0]-b.days[0]; });
   return out;
 }
+/* 任务09：联合方案评价指标——最终完成时间优先。
+ * latestTakeout=所有被调整节点最晚取出；terminalDay=冲突节点中最大 Day；
+ * terminalTakeout=最高 Day 对应取出；totalDelayDays/maxDelayDays 按后移天数计。 */
+function metricsFor55Assignment(entries, batchCount){
+  var latestTakeout=null, terminalDay=null, terminalTakeout=null, totalDelay=0, maxDelay=0;
+  for(var i=0;i<entries.length;i++){
+    var candidate=entries[i].candidate, takeout=candidate.takeout, abs=Math.abs(candidate.offsetDays);
+    totalDelay+=abs;
+    if(abs>maxDelay) maxDelay=abs;
+    if(!latestTakeout || takeout.getTime()>latestTakeout.getTime()) latestTakeout=new Date(takeout);
+    if(terminalDay==null || entries[i].summary.day>terminalDay) terminalDay=entries[i].summary.day;
+  }
+  if(terminalDay!=null){
+    for(var j=0;j<entries.length;j++){
+      if(entries[j].summary.day===terminalDay){
+        var tt=entries[j].candidate.takeout;
+        if(!terminalTakeout || tt.getTime()>terminalTakeout.getTime()) terminalTakeout=new Date(tt);
+      }
+    }
+  }
+  return {latestTakeout:latestTakeout,terminalDay:terminalDay,terminalTakeout:terminalTakeout,
+    batchCount:batchCount,totalDelayDays:totalDelay,maxDelayDays:maxDelay};
+}
+/* 增加批次需至少提前的天数，才算“明显时间收益”（避免为 1 天拆批次） */
+var EARLIER_COMPLETION_MIN_DAYS=2;
+function compare55FinalAssignment(a,b){
+  var ma=a.metrics, mb=b.metrics;
+  var la=ma.latestTakeout?ma.latestTakeout.getTime():0, lb=mb.latestTakeout?mb.latestTakeout.getTime():0;
+  if(la!==lb) return la-lb;
+  var ta=ma.terminalTakeout?ma.terminalTakeout.getTime():0, tb=mb.terminalTakeout?mb.terminalTakeout.getTime():0;
+  if(ta!==tb) return ta-tb;
+  if(ma.batchCount!==mb.batchCount) return ma.batchCount-mb.batchCount;
+  if(ma.totalDelayDays!==mb.totalDelayDays) return ma.totalDelayDays-mb.totalDelayDays;
+  return ma.maxDelayDays-mb.maxDelayDays;
+}
+/* 任务09：在 [最少批次, 最少批次+1] 范围内按新优先级选推荐方案：
+ * latestTakeout 最早 → terminalTakeout 最早 → 批次数少 → 总延后小 → 单节点最大延后小；
+ * 只有比最少批次方案至少提前 EARLIER_COMPLETION_MIN_DAYS 天时才接受 +1 批次。 */
+function best55FinalGroupedAssignment(conflicts, candidateLists){
+  if(!conflicts.length) return {entries:[],batchCount:0,metrics:metricsFor55Assignment([],0)};
+  var seen={}, times=[];
+  for(var i=0;i<candidateLists.length;i++){
+    for(var c=0;c<candidateLists[i].length;c++){
+      var time=candidateLists[i][c].putin.getTime();
+      if(!seen[time]){ seen[time]=true; times.push(time); }
+    }
+  }
+  times.sort(function(a,b){ return b-a; });
+  var maxCount=Math.min(conflicts.length,times.length);
+  if(!maxCount) return null;
+  if(conflicts.length>12 || times.length>18){
+    /* 极端规模安全降级：贪心覆盖（不再做 +1 批次搜索） */
+    var greedyRes=greedy55GroupedAssignment(conflicts,candidateLists);
+    if(!greedyRes) return null;
+    var seenG={}, greedyBatch=0;
+    for(var gi=0;gi<greedyRes.entries.length;gi++){
+      var tkey=greedyRes.entries[gi].candidate.putin.getTime();
+      if(!seenG[tkey]){ seenG[tkey]=true; greedyBatch++; }
+    }
+    return {entries:greedyRes.entries,batchCount:greedyBatch,metrics:metricsFor55Assignment(greedyRes.entries,greedyBatch)};
+  }
+  function collect(count, out){
+    function choose(start, need, selected){
+      if(need===0){
+        var assign=assignmentFor55Dates(conflicts,candidateLists,selected);
+        if(assign) out.push({entries:assign.entries,batchCount:count,
+          totalAbsOffsetDays:assign.totalAbsOffsetDays,maxAbsOffsetDays:assign.maxAbsOffsetDays});
+        return;
+      }
+      for(var t=start;t<=times.length-need;t++){
+        selected.push(times[t]); choose(t+1,need-1,selected); selected.pop();
+      }
+    }
+    choose(0,count,[]);
+  }
+  var minBatch=null;
+  for(var count=1;count<=maxCount;count++){
+    var probe=[];
+    collect(count,probe);
+    if(probe.length){ minBatch=count; break; }
+  }
+  if(minBatch==null) return null;
+  var all=[];
+  for(var cnt=minBatch;cnt<=Math.min(maxCount,minBatch+1);cnt++) collect(cnt,all);
+  var base=null, candidates=[];
+  for(var a=0;a<all.length;a++){
+    all[a].metrics=metricsFor55Assignment(all[a].entries,all[a].batchCount);
+    if(all[a].batchCount===minBatch){
+      if(!base || compare55FinalAssignment(all[a],base)<0) base=all[a];
+    }else{
+      candidates.push(all[a]);
+    }
+  }
+  var DAY=86400000, best=base, bm=base.metrics;
+  for(var b=0;b<candidates.length;b++){
+    var cand=candidates[b], m=cand.metrics;
+    var latestEarlier=bm.latestTakeout&&m.latestTakeout&&bm.latestTakeout.getTime()-m.latestTakeout.getTime()>=EARLIER_COMPLETION_MIN_DAYS*DAY;
+    var terminalEarlier=bm.terminalTakeout&&m.terminalTakeout&&bm.terminalTakeout.getTime()-m.terminalTakeout.getTime()>=EARLIER_COMPLETION_MIN_DAYS*DAY;
+    if(!latestEarlier && !terminalEarlier) continue;   /* 无明确时间收益：保持更少批次 */
+    if(!best || compare55FinalAssignment(cand,best)<0) best=cand;
+  }
+  return best;
+}
 function make55GroupedPlan(expId, conflicts, entries, strategy, explanation){
   var groups=groupsFrom55SuggestionEntries(entries), total=0, advances=0, delays=0, coverageWarning="";
   for(var i=0;i<entries.length;i++){
@@ -659,9 +762,13 @@ function make55GroupedPlan(expId, conflicts, entries, strategy, explanation){
     if(!candidate.holidayCoverageSufficient) coverageWarning="官方节假日覆盖不足";
   }
   for(var c=0;c<conflicts.length;c++) if(conflicts[c].coverageWarning) coverageWarning="官方节假日覆盖不足";
+  var metrics=metricsFor55Assignment(entries,groups.length);
   return {expId:expId,conflicts:conflicts,groups:groups,batchCount:groups.length,
     totalAbsOffsetDays:total,advanceCount:advances,delayCount:delays,
-    coverageWarning:coverageWarning,strategy:strategy,explanation:explanation};
+    coverageWarning:coverageWarning,strategy:strategy,explanation:explanation,
+    latestTakeout:metrics.latestTakeout,terminalDay:metrics.terminalDay,
+    terminalTakeout:metrics.terminalTakeout,totalDelayDays:metrics.totalDelayDays,
+    maxDelayDays:metrics.maxDelayDays};
 }
 function grouped55PlanSignature(plan){
   return (plan.groups||[]).map(function(group){
@@ -691,30 +798,37 @@ function build55GroupedConflictSuggestions(rows, targetState, options){
     if(shortCandidate) recommendedEntries.push({summary:shortConflicts[s],candidate:shortCandidate});
     else unresolved++;
   }
+  var usableLong=[], candidateLists=[];
   if(longConflicts.length){
-    var usableLong=[], candidateLists=[];
     for(var l=0;l<longConflicts.length;l++){
       var list=reasonable55GroupedCandidates(longConflicts[l],maxOffset);
       if(list.length){ usableLong.push(longConflicts[l]); candidateLists.push(list); }
       else unresolved++;
     }
-    var grouped=best55GroupedAssignment(usableLong,candidateLists);
-    if(grouped) recommendedEntries=recommendedEntries.concat(grouped.entries);
+    /* 任务09：推荐 = 最终完成最早优先（批次数最多比最少批次多 1 且需有明显时间收益） */
+    var recommendedLong=best55FinalGroupedAssignment(usableLong,candidateLists);
+    if(recommendedLong) recommendedEntries=recommendedEntries.concat(recommendedLong.entries);
     else unresolved+=usableLong.length;
   }
-  var explanation="只允许不早于当前计划的延后候选；Day<7 选择最早合法后移，Day≥7 在 "+maxOffset+" 天窗口内优先减少放入批次。";
+  var explanation="只允许不早于当前计划的延后候选；优先缩短最终完成时间（最高 Day 尽量早），批次数最多比最少批次方案多 1。";
   if(unresolved) explanation+=" 另有 "+unresolved+" 个冲突节点未找到可行候选。";
   var recommended=make55GroupedPlan(expId,conflicts,recommendedEntries,"delay-grouped",explanation);
 
-  var minimumEntries=[];
-  for(var m=0;m<conflicts.length;m++) if(conflicts[m].candidates.length){
-    minimumEntries.push({summary:conflicts[m],candidate:conflicts[m].candidates[0]});
+  /* 任务09：备选改为“最少批次方案”对照；完全相同则不显示 */
+  var minBatchEntries=[];
+  for(var s2=0;s2<shortConflicts.length;s2++){
+    var shortAlt=earliest55DelayCandidate(shortConflicts[s2]);
+    if(shortAlt) minBatchEntries.push({summary:shortConflicts[s2],candidate:shortAlt});
   }
-  var minimum=make55GroupedPlan(expId,conflicts,minimumEntries,"minimum-offset",
-    "各节点采用最小后移天数的候选；总延后较小，但可能增加放入批次。");
+  if(usableLong.length){
+    var minBatchLong=best55GroupedAssignment(usableLong,candidateLists);
+    if(minBatchLong) minBatchEntries=minBatchEntries.concat(minBatchLong.entries);
+  }
+  var minimumBatch=make55GroupedPlan(expId,conflicts,minBatchEntries,"minimum-batch",
+    "对照：最少批次方案（放入批次最少，最终完成可能更晚）。");
   recommended.alternatives=[];
-  if(minimumEntries.length===recommendedEntries.length && grouped55PlanSignature(minimum)!==grouped55PlanSignature(recommended)){
-    recommended.alternatives.push(minimum);
+  if(minBatchEntries.length===recommendedEntries.length && grouped55PlanSignature(minimumBatch)!==grouped55PlanSignature(recommended)){
+    recommended.alternatives.push(minimumBatch);
   }
   return recommended;
 }
@@ -878,7 +992,9 @@ function offset55Text(offset){
 function operation55GroupedPlanHTML(plan, title){
   if(!plan || !plan.groups || !plan.groups.length) return "";
   var html='<div class="operation-suggestion-joint"><div class="operation-suggestion-joint-title">'+esc(title)+'</div>'
-    +'<div>总批次数：'+plan.batchCount+'；总延后 '+plan.totalAbsOffsetDays+' 天；延后 '+plan.delayCount+' 个。</div>';
+    +'<div>预计最终完成：'+fmtDT(plan.latestTakeout)
+    +(plan.terminalDay!=null?'；Day'+plan.terminalDay+' 完成：'+fmtDT(plan.terminalTakeout):'')
+    +'；放入批次：'+plan.batchCount+'；总延后 '+plan.totalDelayDays+' 天</div>';
   if(plan.coverageWarning){
     html+='<div class="operation-suggestion-warning">⚠ '+esc(plan.coverageWarning)+'；联合建议仅按已知规则筛选，不能视为完整确认。</div>';
   }
@@ -937,8 +1053,8 @@ function operation55SuggestionHTML(row, targetState, conflictTime){
       html+='<div style="margin-top:6px"><button class="mini" data-act="groupedApplyOpen" data-id="'+esc(row.expId)+'" data-sig="'+esc(grouped55PlanSignature(grouped))+'">采用推荐方案</button></div>';
     }
     if(grouped.alternatives&&grouped.alternatives.length){
-      html+='<details class="operation-suggestion-joint-alt"><summary>联合建议备选：最小总偏移</summary>'
-        +operation55GroupedPlanHTML(grouped.alternatives[0],'备选方案｜最小总偏移')+'</details>';
+      html+='<details class="operation-suggestion-joint-alt"><summary>联合建议备选：最少批次</summary>'
+        +operation55GroupedPlanHTML(grouped.alternatives[0],'备选方案｜最少批次')+'</details>';
     }
   }
   return html+'</div></details>';

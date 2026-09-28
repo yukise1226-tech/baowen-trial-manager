@@ -73,11 +73,15 @@ test('GROUP-02', '只冲突一个短 Day 时选择最早合法后移', () => {
   assert.equal(app.fmtDT(plan.groups[0].putin), '2026-10-09 10:00');
 });
 
-test('GROUP-03', '多个 Day>=7 冲突可通过后移合并批次', () => {
+test('GROUP-03', '多个 Day>=7 冲突可通过后移联合，且 Day14 提前独立放入', () => {
   const plan = grouped(classicState([9,10,11,12,13,14]));
-  assert.equal(plan.batchCount, 2);
+  assert.equal(plan.batchCount, 3);
+  const g14 = plan.groups.find(group => group.days.length === 1 && group.days[0] === 14);
+  assert.ok(g14);
+  assert.equal(app.fmtDT(g14.putin), '2026-09-24 10:00');
   const totalDays = plan.groups.reduce((sum, group) => sum + group.days.length, 0);
   assert.equal(totalDays, 6);
+  assert.equal(plan.alternatives[0].batchCount, 2);
 });
 
 test('GROUP-04', '联合建议只包含冲突节点，不移动无冲突 Day', () => {
@@ -93,14 +97,16 @@ test('GROUP-05', '推荐方案全部为延后候选，禁止提前', () => {
   assert.ok(entriesOf(plan).every(entry => entry.offset > 0));
 });
 
-test('GROUP-06', '节后最小偏移策略保留为明显不同的备选', () => {
+test('GROUP-06', '保留“最少批次方案”对照：批次更少但最终完成更晚', () => {
   const plan = grouped(classicState());
   assert.equal(plan.alternatives.length, 1);
   const alternative = plan.alternatives[0];
-  assert.equal(alternative.strategy, 'minimum-offset');
-  assert.ok(alternative.delayCount > 0);
-  assert.ok(alternative.totalAbsOffsetDays < plan.totalAbsOffsetDays);
-  assert.ok(alternative.batchCount > plan.batchCount);
+  assert.equal(alternative.strategy, 'minimum-batch');
+  assert.equal(alternative.delayCount, 7);
+  assert.ok(alternative.batchCount < plan.batchCount);
+  assert.ok(alternative.totalDelayDays > plan.totalDelayDays);
+  assert.ok(alternative.terminalTakeout.getTime() > plan.terminalTakeout.getTime());
+  assert.equal(alternative.latestTakeout.getTime(), plan.latestTakeout.getTime());
 });
 
 test('GROUP-07', '所有 group 节点严格满足 Day×24h', () => {
@@ -145,19 +151,22 @@ test('GROUP-11', '未收录年份正确标记 coverageWarning', () => {
   const plan = app.build55GroupedConflictSuggestions([syntheticRow('2027-09-19T10:00', 1)], state);
   assert.ok(plan);
   assert.equal(plan.coverageWarning, '官方节假日覆盖不足');
-  assert.match(plan.explanation, /Day<7 选择最早合法后移/);
+  assert.match(plan.explanation, /优先缩短最终完成时间/);
 });
 
-test('GROUP-12', '经典案例 Day3 独立最早后移，Day9～14 后移联合为两个长周期批次', () => {
+test('GROUP-12', '经典案例 Day14 提前独立放入，其余长周期节点后移联合', () => {
   const plan = grouped(classicState());
-  assert.equal(plan.batchCount, 3);
-  assert.equal(plan.totalAbsOffsetDays, 51);
+  assert.equal(plan.batchCount, 4);
+  assert.equal(plan.totalAbsOffsetDays, 47);
   const short = plan.groups.find(group => group.days.length === 1 && group.days[0] === 3);
   assert.ok(short);
   assert.equal(app.fmtDT(short.putin), '2026-10-09 10:00');
-  const long = plan.groups.filter(group => group.days.every(day => day >= 9));
+  const g14 = plan.groups.find(group => group.days.length === 1 && group.days[0] === 14);
+  assert.ok(g14);
+  assert.equal(app.fmtDT(g14.putin), '2026-09-24 10:00');
+  const long = plan.groups.filter(group => group.days.length > 1 && group.days.every(day => day >= 9));
   assert.equal(long.length, 2);
-  assert.deepEqual(Array.from(long[0].days), [10,11,12,14]);
+  assert.deepEqual(Array.from(long[0].days), [10,11,12]);
   assert.equal(app.fmtDT(long[0].putin), '2026-09-28 10:00');
   assert.deepEqual(Array.from(long[1].days), [9,13]);
   assert.equal(app.fmtDT(long[1].putin), '2026-09-29 10:00');
@@ -185,10 +194,12 @@ test('GROUP-15', '操作日程展示联合建议、分组时间与总批次数�
   const day3 = app.computeSchedule(state).rows.find(row => row.day === 3);
   const markup = app.operation55SuggestionHTML(day3, state, day3.effectivePlanTakeout);
   assert.match(markup, /联合建议｜推荐：延后集中/);
-  assert.match(markup, /总批次数：3/);
+  assert.match(markup, /预计最终完成：2026-10-12 10:00/);
+  assert.match(markup, /Day14 完成：2026-10-08 10:00/);
+  assert.match(markup, /放入批次：4/);
   assert.match(markup, /Day9、Day13/);
-  assert.match(markup, /Day10、Day11、Day12、Day14/);
-  assert.match(markup, /总延后 51 天/);
+  assert.match(markup, /Day10、Day11、Day12/);
+  assert.match(markup, /总延后 47 天/);
   /* 任务08：出现“采用推荐方案”按钮，但只打开确认弹窗（groupedApplyOpen），不直接写 state */
   assert.match(markup, /采用推荐方案/);
   assert.match(markup, /data-act="groupedApplyOpen"/);

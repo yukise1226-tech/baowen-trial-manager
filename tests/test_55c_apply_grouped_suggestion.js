@@ -197,9 +197,11 @@ test('APPLY-13', '操作日程成功显示调整后的日期', () => {
   const ev22 = app.eventsForDate(rows, '2026-09-22');
   assert.ok(!ev22.putins.some(r => r.expId === 'E55' && r.day === 3));   /* 原放入日不再有 Day3 */
   const ev0928 = app.eventsForDate(rows, '2026-09-28');
-  assert.deepEqual(Array.from(ev0928.putins.filter(r => r.expId === 'E55').map(r => r.day).sort((a,b) => a-b)), [10,11,12,14]);
+  assert.deepEqual(Array.from(ev0928.putins.filter(r => r.expId === 'E55').map(r => r.day).sort((a,b) => a-b)), [10,11,12]);
   const ev0929 = app.eventsForDate(rows, '2026-09-29');
   assert.deepEqual(Array.from(ev0929.putins.filter(r => r.expId === 'E55').map(r => r.day).sort((a,b) => a-b)), [9,13]);
+  const ev0924 = app.eventsForDate(rows, '2026-09-24');
+  assert.ok(ev0924.putins.some(r => r.expId === 'E55' && r.day === 14));   /* 当日原计划亦有 Day4/5 */
 });
 
 test('APPLY-14', 'CSV有效计划使用调整后日期，同时原计划追溯列仍保留原值', () => {
@@ -241,11 +243,12 @@ test('APPLY-UI-01', '确认弹窗按批次分组展示放入/取出时间，且�
   const exp = app.findExp('E55');
   const markup = app.apply55GroupedPlanConfirmHTML(exp, plan);
   assert.match(markup, /将调整以下55℃节点：/);
+  assert.match(markup, /09-24 10:00 放入：/);
+  assert.match(markup, /Day14 → 10-08 10:00/);
   assert.match(markup, /09-28 10:00 放入：/);
   assert.match(markup, /Day10 → 10-08 10:00/);
   assert.match(markup, /Day11 → 10-09 10:00/);
   assert.match(markup, /Day12 → 10-10 10:00/);
-  assert.match(markup, /Day14 → 10-12 10:00/);
   assert.match(markup, /09-29 10:00 放入：/);
   assert.match(markup, /Day9 → 10-08 10:00/);
   assert.match(markup, /Day13 → 10-12 10:00/);

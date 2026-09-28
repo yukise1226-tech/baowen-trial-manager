@@ -110,14 +110,15 @@ test('DELAY-06', '无冲突 Day1/2/4/5/6/7/8 完全不移动', () => {
   }
 });
 
-test('DELAY-07', 'Day9～14 可通过后移联合成较少批次', () => {
+test('DELAY-07', 'Day9～14 可通过后移联合成较少批次（Day14 提前独立）', () => {
   const state = classicState();
   const plan = grouped(state);
   assert.ok(plan.batchCount < 7, '联合批次应少于冲突节点数');
   const longGroups = plan.groups.filter(group => group.days.every(day => day >= 9));
-  assert.equal(longGroups.length, 2);
+  assert.equal(longGroups.length, 3);
   const totalDays = longGroups.reduce((sum, group) => sum + group.days.length, 0);
   assert.equal(totalDays, 6);
+  assert.ok(longGroups.every(group => group.offsets.every(offset => offset > 0)));
 });
 
 test('DELAY-08', '所有联合节点保持 Day×24h', () => {
