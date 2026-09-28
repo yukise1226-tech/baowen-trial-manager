@@ -1,5 +1,11 @@
 # 简短版本记录
 
+## V0.6 Stable（2026-09-28）
+
+正式发布：Cloud Sync V1.1 已包含；55℃ 稳定逻辑保持不变；36℃ 冻结不继续优化；`schemaVersion: 6` 不变。
+Pages 正式生产部署成功：`https://baowen-tool.pages.dev`（deployment `5c447bf7`）；桌面生产 smoke 通过，手机实机 smoke 通过（用户实测）。
+最终回归：HTML 内置 147/147、Cloud Sync V1.1 专项 10/10、同步 PoC 12/12、36℃ 单插入 9/9、Worker 单测+集成 20/20。
+
 ## V0.5.4.1 Stable
 
 55℃稳定基线：完成记录只读，CSV 与当前有效计划同步；本轮开发不改其业务语义。

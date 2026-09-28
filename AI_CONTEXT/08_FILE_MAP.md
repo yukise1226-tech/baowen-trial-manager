@@ -14,6 +14,9 @@
 | 函数索引源文档 | `ARCHITECTURE.md` | `/Users/johnnysteven/Documents/AI项目/保温试验管理/ARCHITECTURE.md` |
 | 回归清单源文档 | `regression.md` | `/Users/johnnysteven/Documents/AI项目/保温试验管理/regression.md` |
 | 36℃专项测试 | `tests/test_36c_single_insertion.js` | `/Users/johnnysteven/Documents/AI项目/保温试验管理/tests/test_36c_single_insertion.js` |
+| 云同步 Worker（已部署后端） | `cloud-sync-worker/`（src/index.js、src/cas.js、wrangler.jsonc、test/sync.test.js） | `/Users/johnnysteven/Documents/AI项目/保温试验管理/cloud-sync-worker/` |
+| Pages 静态部署目录（正式生产） | `pages/`（index.html 为主 HTML 部署副本、README.md） | `/Users/johnnysteven/Documents/AI项目/保温试验管理/pages/` |
+| 云同步测试（PoC + V1.1） | `tests/test_cloud_sync_poc.js`、`tests/mock_sync_server.js`、`tests/test_sync_revision_v11.js` | `/Users/johnnysteven/Documents/AI项目/保温试验管理/tests/` |
 | Git 元数据 | `.git/` | `/Users/johnnysteven/Documents/AI项目/保温试验管理/.git/` |
 | 本交接包 | `AI_CONTEXT/` | `/Users/johnnysteven/Documents/AI项目/保温试验管理/AI_CONTEXT/` |
 
@@ -21,4 +24,4 @@
 
 `/Users/johnnysteven/Documents/Claude code/保温试验管理/保温试验排程工具/保温试验排程.html`
 
-Git：当前开发分支 `dev-36c`；`main` 为初始快照。若路径移动，先在新位置执行 `git rev-parse --show-toplevel`，再组合表中的相对路径。
+Git：当前分支 `main`（V0.6 Stable 已发布，`dev-v0.6` 经 PR #1 合入 main）。若路径移动，先在新位置执行 `git rev-parse --show-toplevel`，再组合表中的相对路径。
