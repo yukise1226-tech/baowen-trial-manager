@@ -1,0 +1,45 @@
+# 简短版本记录
+
+## V0.5.4.1 Stable
+
+55℃稳定基线：完成记录只读，CSV 与当前有效计划同步；本轮开发不改其业务语义。
+
+## V0.6-dev
+
+新增独立 `protocol36`、15/30/45/60 天周期、Day0 一次放入、周期取样、微生物检测和最终取出；数据升级至 `schemaVersion: 6`。
+
+`bb1444e`：确认单次放入模型；36℃排程和操作日程直接显示标准节点时间，新增九项专项回归。仍为开发版，未升稳定版。
+
+## 手动云同步 PoC（未升稳定版）
+
+- 保留 localStorage 为本地主数据，新增“同步设置 / 上传到云端 / 从云端拉取 / 同步状态”。
+- 整份保存 `schemaVersion: 6` state；envelope metadata 含 `schemaVersion`、`revision`、`updatedAt`、`deviceId`，不改 55℃/36℃业务字段与算法。
+- 提供本机 Mock 与可配置 HTTP remote adapter；Token 只存在浏览器会话，不写死或持久化到 HTML/localStorage。
+- 后端失败不影响本地业务数据；任何远程失败都不自动覆盖 localStorage。
+
+### 真实 Cloudflare 联调（已完成）
+
+- 后端改为 **Worker + SQLite-backed Durable Object**（不用 Workers KV 做 revision 判断）：`cloud-sync-worker/`，固定 DO `primary` 保存整份 envelope，服务端 CAS；本地 `wrangler dev` 测试 20/20。
+- 已部署：`https://baowen-sync.cloud-sync-worker.workers.dev`（接口 `/sync`）；`SYNC_TOKEN` 用 Wrangler Secret 配置，值绝不记录。
+- 页面 remote adapter 已接入该 Worker（默认远程地址），PUT 改为服务端 CAS 契约（baseRevision=上次同步的 `syncedRevision`）；409 提示“云端已经有更新……请先拉取最新版本。”；网络层失败提示“无法连接远程服务器，本地数据未受影响。”（原始错误保留 console）。
+- 真实浏览器联调（用户实测）：A→B / B→A 双向同步、409 冲突保护、401 错误 Token、网络失败本地保护，全部通过。
+- 自动化：云同步专项 12/12（含 CAS/409/401/网络失败/同步后本地编辑不破坏 CAS）、36℃ 9/9、HTML 内置完整回归 147/147、Worker 单测+集成 20/20。
+- 当前仍为**手动同步**，不做自动双向同步/多用户/D1/Dashboard。
+
+## Cloudflare Pages 测试站（feat/mobile-pages-poc）
+
+- 部署静态目录 `pages/`（index.html 为主 HTML 部署副本）到项目 `baowen-tool`：
+  `https://baowen-tool.pages.dev`；不含 Secret，数据经 Worker/Durable Object 同步。
+- 手机响应式仅加 CSS（≤768px）：头部换行、宽表自身横向滚动、试验管理移动端隐藏次要列、
+  弹窗适配屏幕、触控按钮 40px；不改 55℃/36℃/同步/schemaVersion 逻辑。
+- iPhone Safari 已能打开 Pages 并显示云端数据；桌面自动化 147/147、同步 12/12、36℃ 9/9；
+  响应式最终效果等待用户真实 iPhone 截图验收。
+
+## Cloud Sync V1.1（未升稳定版）
+
+- `cloudRevision` 现在只代表最近一次成功上传/拉取确认的云端 CAS 版本；本地连续编辑不再增加或展示 revision。
+- 新增 `lastSyncedFingerprint` 与 `lastSyncedAt`；同步状态由业务 state fingerprint 动态计算，修改后恢复原值会自动回到“已同步”。同步 metadata 自身不参与 fingerprint。
+- 无内容变化的手动上传直接跳过，不发 GET/PUT，也不生成新云端 revision；真正上传仍只递增一次。
+- 旧 metadata 无 fingerprint 时保留云端 revision，并显示“同步状态待确认”；不把历史本地计数误认成云端版本。
+- 409 / 401 / 网络失败继续保护本地 state 与同步 metadata；不改 Worker/DO、55℃、36℃、`schemaVersion: 6`、手动同步模式。
+- 自动化：revision 专项 10/10、同步专项 12/12、36℃专项 9/9、HTML 内置回归 147/147、Worker 单测+集成 20/20；Chrome 四个真实交互场景通过。

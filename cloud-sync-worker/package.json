@@ -1,0 +1,15 @@
+{
+  "name": "cloud-sync-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "保温试验排程工具手动云同步 Worker（SQLite-backed Durable Object，服务端 revision CAS）",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node test/sync.test.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
