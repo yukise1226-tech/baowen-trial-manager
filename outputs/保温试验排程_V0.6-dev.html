@@ -908,12 +908,25 @@ function rows55ForGroupedSuggestion(row, targetState){
 }
 function operation55SuggestionHTML(row, targetState, conflictTime){
   if(!conflictTime) return "";
-  var conflictStatus=operationDateStatus(conflictTime,targetState);
-  if(conflictStatus.available) return "";
-  var summary=build55ConflictSummary(row,targetState), candidates=summary.candidates.slice(0,6);
+  var summary=build55ConflictSummary(row,targetState);
+  /* 任务08.1：未确认放入节点按完整冲突摘要判断——放入或取出任一不可操作都显示建议，
+   * 不能只检查当前显示列的单个时间；已确认/进行中/已完成维持既有行为。 */
+  var show=(row.status==="未放入")
+    ? summary.conflictReasons.length>0
+    : !operationDateStatus(conflictTime,targetState).available;
+  if(!show) return "";
+  var candidates=summary.candidates.slice(0,6);
   if(!candidates.length) return "";
   var html='<details class="operation-suggestion"><summary>查看调整建议</summary>'
-    +'<div class="operation-suggestion-box"><div>只读候选；每组都保持 Day'+esc(summary.day)+' 的 '+esc(summary.day*24)+' 小时间隔，不会自动修改计划。</div>';
+    +'<div class="operation-suggestion-box">';
+  if(summary.conflictReasons.length){
+    var reasonLabels={"custom-skip":"自定义跳过","holiday":"法定节假日","weekend":"周末","calendar-unavailable":"节假日数据未覆盖"};
+    var reasonTxt=summary.conflictReasons.map(function(reason){
+      return (reason.action==="putin"?"放入":"取出")+"日冲突（"+(reasonLabels[reason.reason]||reason.reason)+"）";
+    }).join("；");
+    html+='<div class="operation-date-note conflict">⚠ '+esc(reasonTxt)+'｜原计划不变</div>';
+  }
+  html+='<div>只读候选；每组都保持 Day'+esc(summary.day)+' 的 '+esc(summary.day*24)+' 小时间隔，不会自动修改计划。</div>';
   if(summary.coverageWarning){
     html+='<div class="operation-suggestion-warning">⚠ '+esc(summary.coverageWarning)+'；候选仅按周末与自定义跳过日等已知规则筛选。</div>';
   }
@@ -1003,6 +1016,18 @@ function apply55GroupedPlanConfirmHTML(exp, plan){
     +'<div class="m-foot">'
     +'<button data-act="groupedApplyYes" data-id="'+esc(exp.id)+'" data-sig="'+esc(grouped55PlanSignature(plan))+'">确认采用</button>'
     +'<button class="ghost" data-act="closeModal">取消</button></div>';
+}
+/* 任务08.1：55℃试验级冲突摘要——排程页试验区块顶部展示未放入冲突节点数量与 Day 列表，
+ * 【查看联合调整建议】复用任务08的 groupedApplyOpen 确认采用流程，不建立第二套算法。 */
+function exp55ConflictSummaryHTML(item, targetState){
+  if(!item || item.kind!=="ok" || !item.exp || item.exp.condition==="36±1℃") return "";
+  var plan=build55GroupedConflictSuggestions(item.rows, targetState, {expId:item.exp.id});
+  if(!plan || !validate55GroupedSuggestionPlanForApply(targetState, item.exp.id, plan).ok) return "";
+  var daysTxt=plan.conflicts.map(function(conflict){ return "Day"+conflict.day; }).join("、");
+  return '<div class="operation-date-note conflict" style="display:block;margin:6px 0">'
+    +'⚠ 当前计划存在 '+plan.conflicts.length+' 个不可操作日冲突：'+esc(daysTxt)+' '
+    +'<button class="mini" data-act="groupedApplyOpen" data-id="'+esc(item.exp.id)+'" data-sig="'+esc(grouped55PlanSignature(plan))+'">查看联合调整建议</button>'
+    +'</div>';
 }
 /* Date → datetime-local 文本（调整计划弹窗用） */
 function fmtDL(dt){ return ymdOf(dt)+"T"+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
@@ -3487,6 +3512,8 @@ function planHTML(sch, st){
         html += '<div class="progress" style="border-color:var(--green)">'
           + '<span class="badge all">全部完成</span> 可在“试验管理”中归档项目</div>';
       }
+      /* 任务08.1：试验级冲突摘要（未放入冲突节点数量与 Day 列表 + 联合调整建议入口） */
+      html += exp55ConflictSummaryHTML(it, st);
       /* 批次摘要（V0.5.4：标题“待放入批次”，只列仍未放入的节点）：一行一个批次 */
       if(it.batches.length){
         html += '<div class="batlines"><div class="batch-title">待放入批次</div>';
@@ -3911,6 +3938,8 @@ function todayPutinRow(r){
     + '<td class="dt">'+(planT ? '<span class="dt" title="'+planTitle+'">'+esc(fmtCompact(planT))
       + ((r.status==="未放入" && r.adjusted) ? '<span class="adjmark">已调整</span>' : "")+'</span>'
       : '<span class="muted">—</span>')+operationDateStatusHTML(planT,state)
+      /* 任务08.1：待放入行同时提示对应计划取出日期的冲突（放入可操作、取出冲突时也能看到） */
+      +((r.status==="未放入") ? operationDateStatusHTML(currentTakeoutOf(r),state) : "")
       +operation55SuggestionHTML(r,state,planT)+'</td>'
     + '<td><span class="tasktype">55℃·放入</span></td>'
     + '<td>'+esc(r.no)+'</td>'

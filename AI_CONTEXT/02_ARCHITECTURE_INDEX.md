@@ -24,6 +24,7 @@
 | `suggest55ConflictAlternatives` / `build55ConflictSummary` | 为 55℃节点生成保持 Day×24h 的双向只读候选，并汇总冲突与日历覆盖状态 | `offsetDays`、`holidayCoverageStatus`、`operation55SuggestionHTML` |
 | `build55GroupedConflictSuggestions` / `operation55GroupedPlanHTML` | 为同一 55℃试验的未确认冲突节点生成节前优先、长周期可合批的只读联合建议 | `advance-grouped`、`minimum-offset`、`operation-suggestion-joint` |
 | `validate55GroupedSuggestionPlanForApply` / `apply55GroupedSuggestionPlan` / `apply55GroupedPlanConfirmHTML` | 联合建议人工确认采用：原子校验+一次性写入 adjustedPlanPutin，确认弹窗分组展示 | `groupedApplyOpen`、`groupedApplyYes`、`采用推荐方案` |
+| `exp55ConflictSummaryHTML` | 55℃试验级冲突摘要（数量+Day列表+联合调整建议入口），复用联合建议与采用流程 | `不可操作日冲突`、`查看联合调整建议` |
 | `onTodayInput` / `onTodayChange` / `onTodayClick` | 实际字段、确认与撤销事件 | `task36Text`、`task36Time`、`task36Undo` |
 | `buildCsvTexts` 的 `plan36`、`rows36` 分支 | 36℃排程/操作 CSV；与55℃分支共存 | `plan36`、`rows36` |
 | `migrate36PhysicalActionModel` / `migrateV06` | 旧记录合并、schema 5→6 | `legacy-micro-day`、`migrateV06` |
