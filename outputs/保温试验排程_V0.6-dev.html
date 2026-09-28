@@ -6215,19 +6215,27 @@ function runSelfTests(){
           && document.getElementById("expList").textContent.indexOf("TP-99")>=0;
         ok(ok50, "T50 点击【进行中】→ 切回活动列表", "");
 
-        /* T51 排程结果只读且简化（V0.5.1）：每 Day 一行、8 列、无按钮/输入框/选择框 */
+        /* T51 排程结果只读且简化（V0.5.1）：每 Day 一行、8 列；Day 行无旧式直接操作控件。
+         * V0.7：试验级建议入口（查看联合调整建议/重新优化建议/检查并修正）允许出现在 planBody，
+         * 但不得出现在 Day 行内，也不允许其他按钮混入。 */
         var st51 = setup();
         st51.experiments[0].id = "EX51";
         state = st51;
         renderPlan();
         var dayrows51 = document.querySelectorAll('#planBody tr.dayrow').length;
         var inputs51 = document.querySelectorAll('#planBody input, #planBody select').length;
-        var btns51 = document.querySelectorAll('#planBody button').length;
+        var dayCtrl51 = document.querySelectorAll('#planBody tr.dayrow button, #planBody tr.dayrow input, #planBody tr.dayrow select').length;
+        var allowedActs51 = {"groupedApplyOpen":1, "reoptimizeOpen":1, "legacyRepairOpen":1};
+        var onlyEntryBtns51 = true;
+        var planBtns51 = document.querySelectorAll('#planBody button');
+        for(var pb51=0; pb51<planBtns51.length; pb51++){
+          if(!allowedActs51[planBtns51[pb51].getAttribute("data-act")]) onlyEntryBtns51 = false;
+        }
         var ths51 = document.querySelectorAll('#planBody table.daytable thead th').length;
         var wrap51 = document.querySelector('#planBody .table-wrap') !== null;
-        ok(dayrows51===14 && inputs51===0 && btns51===0 && ths51===8 && wrap51,
-           "T51 排程结果只读且简化：每 Day 一行、8 列、无按钮/输入框、有宽度保护",
-           "day行="+dayrows51+"，输入框="+inputs51+"，按钮="+btns51+"，列数="+ths51+"，wrap="+wrap51);
+        ok(dayrows51===14 && inputs51===0 && dayCtrl51===0 && onlyEntryBtns51 && ths51===8 && wrap51,
+           "T51 排程结果只读且简化：每 Day 一行、8 列、Day 行无旧式控件、仅试验级建议入口、有宽度保护",
+           "day行="+dayrows51+"，输入框="+inputs51+"，Day行控件="+dayCtrl51+"，仅试验级入口="+onlyEntryBtns51+"，列数="+ths51+"，wrap="+wrap51);
 
         /* T52 有偏差时排程结果红色显示偏差（只读偏差列） */
         var st52 = setup();
@@ -6610,11 +6618,12 @@ function runSelfTests(){
            "T97 点击计划放入时间（小入口）打开调整弹窗（含当前计划/原计划）",
            "入口="+ok97a+"，弹窗="+ok97b);
 
-        /* T98 恢复原计划仅在调整弹窗内操作（用户用例 T08） */
+        /* T98 恢复原计划仅在调整弹窗内操作（用户用例 T08）
+         * V0.7：主表 Day 行不出现直接操作控件；试验级建议入口（非 Day 行）允许存在。 */
         var ok98a = document.querySelector('#planBody [data-act="restorePlan"]')===null
-          && document.querySelector('#planBody button')===null;   /* 主表无任何按钮 */
+          && document.querySelector('#planBody tr.dayrow button, #planBody tr.dayrow input')===null;
         var ok98b = document.querySelector('#modalBox [data-act="restorePlan"]')!==null;
-        ok(ok98a && ok98b, "T98 恢复原计划只在调整弹窗内，主表无恢复按钮", "");
+        ok(ok98a && ok98b, "T98 恢复原计划只在调整弹窗内，主表 Day 行无直接操作按钮", "");
 
         /* T99 普通桌面宽度下排程结果不横向溢出（用户用例 T09） */
         var st99 = setup();
