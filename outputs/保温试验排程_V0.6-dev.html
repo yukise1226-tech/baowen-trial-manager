@@ -1448,32 +1448,43 @@ function newDeviceId(){
   }
   return "device-"+String(nowMs())+"-"+String(typeof performance!=="undefined"?Math.floor(performance.now()*1000):0);
 }
-function defaultSyncMeta(){ return {revision:0,updatedAt:"",deviceId:newDeviceId(),lastSyncAt:"",lastAction:"",lastRemoteDeviceId:"",syncedRevision:0}; }
+function defaultSyncMeta(){ return {metadataVersion:2,cloudRevision:0,cloudUpdatedAt:"",deviceId:newDeviceId(),
+  lastSyncedFingerprint:"",lastSyncedAt:"",lastAction:"",lastRemoteDeviceId:"",localMutationSeq:0}; }
+function normalizeSyncMeta(raw){
+  var source=(raw&&typeof raw==="object")?raw:{};
+  var cloudRevision=source.cloudRevision;
+  if(cloudRevision===undefined || cloudRevision===null) cloudRevision=source.syncedRevision; /* v1 兼容 */
+  var localMutationSeq=source.localMutationSeq;
+  if(localMutationSeq===undefined || localMutationSeq===null) localMutationSeq=source.revision; /* v1 仅作内部计数迁移 */
+  return {
+    metadataVersion:2,
+    cloudRevision:Math.max(0,Math.floor(+cloudRevision||0)),
+    cloudUpdatedAt:String(source.cloudUpdatedAt||source.updatedAt||""),
+    deviceId:String(source.deviceId||newDeviceId()),
+    lastSyncedFingerprint:String(source.lastSyncedFingerprint||""),
+    lastSyncedAt:String(source.lastSyncedAt||source.lastSyncAt||""),
+    lastAction:String(source.lastAction||""),
+    lastRemoteDeviceId:String(source.lastRemoteDeviceId||""),
+    localMutationSeq:Math.max(0,Math.floor(+localMutationSeq||0))
+  };
+}
 function loadSyncMeta(){
   var m;
   try{ m=JSON.parse(localStorage.getItem(SYNC_META_KEY)||"null"); }catch(e){ m=null; }
-  if(!m || typeof m!=="object") m=defaultSyncMeta();
-  if(!m.deviceId) m.deviceId=newDeviceId();
-  m.revision=Math.max(0,Math.floor(+m.revision||0));
-  /* V0.6 → 真实云端 CAS：syncedRevision=上次成功同步时云端的 revision，
-   * 是服务端 compare-and-set 的 baseRevision；与本地脏计数器 revision 分开。 */
-  m.syncedRevision=Math.max(0,Math.floor(+m.syncedRevision||0));
-  m.updatedAt=String(m.updatedAt||"");
-  m.lastSyncAt=String(m.lastSyncAt||"");
-  m.lastAction=String(m.lastAction||"");
-  m.lastRemoteDeviceId=String(m.lastRemoteDeviceId||"");
+  m=normalizeSyncMeta(m||defaultSyncMeta());
+  /* v1 没有 fingerprint 时无法证明本地内容等于最后同步内容：保留 cloudRevision，
+   * 但状态显示“待确认”，直到下一次成功上传或拉取建立基线。 */
   try{ localStorage.setItem(SYNC_META_KEY,JSON.stringify(m)); }catch(e){}
   return m;
 }
 function writeSyncMeta(meta){
-  var m=meta||defaultSyncMeta();
-  m.syncedRevision=Math.max(0,Math.floor(+m.syncedRevision||0));
+  var m=normalizeSyncMeta(meta||defaultSyncMeta());
   localStorage.setItem(SYNC_META_KEY,JSON.stringify(m));
   return m;
 }
 function touchLocalSyncMeta(){
   var m=loadSyncMeta();
-  m.revision+=1; m.updatedAt=syncNowISO(); m.lastAction="local";
+  m.localMutationSeq+=1; m.lastAction="local";
   writeSyncMeta(m); return m;
 }
 function defaultSyncConfig(){ return {adapter:"mock",endpoint:REMOTE_SYNC_ENDPOINT}; }
@@ -1503,6 +1514,61 @@ function stateSnapshotForSync(localState){
   delete snap._pendingSave;
   if(snap.schemaVersion!==6) throw new Error("只允许同步 schemaVersion 6 数据");
   return snap;
+}
+function canonicalJSONString(value){
+  if(value===null) return "null";
+  if(Array.isArray(value)) return "["+value.map(canonicalJSONString).join(",")+"]";
+  if(typeof value==="object"){
+    return "{"+Object.keys(value).sort().map(function(key){
+      return JSON.stringify(key)+":"+canonicalJSONString(value[key]);
+    }).join(",")+"}";
+  }
+  return JSON.stringify(value);
+}
+function fingerprintText(text){
+  /* 稳定 64-bit FNV-1a；只用于内容等同性判断，不用于认证或安全决策。 */
+  var hash=BigInt("14695981039346656037"), prime=BigInt("1099511628211"), mask=BigInt("18446744073709551615");
+  for(var i=0;i<text.length;i++){
+    hash ^= BigInt(text.charCodeAt(i));
+    hash = (hash*prime)&mask;
+  }
+  return "fnv1a64-v1:"+hash.toString(16).padStart(16,"0");
+}
+function fingerprintSyncState(localState){
+  return fingerprintText(canonicalJSONString(stateSnapshotForSync(localState)));
+}
+function syncContentState(localState,meta){
+  var m=normalizeSyncMeta(meta), currentFingerprint=fingerprintSyncState(localState);
+  var baselineKnown=!!m.lastSyncedFingerprint;
+  return {baselineKnown:baselineKnown,dirty:baselineKnown?(currentFingerprint!==m.lastSyncedFingerprint):null,
+    currentFingerprint:currentFingerprint,cloudRevision:m.cloudRevision};
+}
+function syncStatusInfo(localState,meta){
+  var m=normalizeSyncMeta(meta), content=syncContentState(localState,m), message, kind;
+  if(!content.baselineKnown){
+    message=m.cloudRevision>0
+      ? "同步状态待确认 · 基于云端 r"+m.cloudRevision
+      : "同步状态待确认 · 尚未建立云端基线";
+    kind="";
+  }else if(content.dirty){
+    message="本地有未同步修改 · 基于云端 r"+m.cloudRevision;
+    kind="dirty";
+  }else{
+    message="已同步 · 云端 r"+m.cloudRevision;
+    kind="ok";
+  }
+  return {message:message,kind:kind,baselineKnown:content.baselineKnown,dirty:content.dirty,
+    currentFingerprint:content.currentFingerprint,cloudRevision:m.cloudRevision,lastSyncedAt:m.lastSyncedAt};
+}
+function syncMetaAfterSuccess(previous,remoteMeta,fingerprint,action){
+  var m=normalizeSyncMeta(previous);
+  m.cloudRevision=Math.max(0,Math.floor(+remoteMeta.revision||0));
+  m.cloudUpdatedAt=String(remoteMeta.updatedAt||"");
+  m.lastSyncedFingerprint=String(fingerprint||"");
+  m.lastSyncedAt=syncNowISO();
+  m.lastAction=String(action||"");
+  m.lastRemoteDeviceId=String(remoteMeta.deviceId||"");
+  return m;
 }
 function validateSyncEnvelope(envelope){
   if(!envelope || typeof envelope!=="object" || !envelope.metadata || !envelope.state) throw new Error("云端数据格式无效");
@@ -1597,46 +1663,46 @@ function askSyncConfirmation(confirmFn,message){
   catch(e){ return Promise.reject(e); }
 }
 function uploadStateWithAdapter(adapter,localState,localMeta,confirmFn){
-  var snap=stateSnapshotForSync(localState);
+  var snap=stateSnapshotForSync(localState), meta=normalizeSyncMeta(localMeta);
+  var currentFingerprint=fingerprintSyncState(localState);
+  if(meta.lastSyncedFingerprint && currentFingerprint===meta.lastSyncedFingerprint){
+    return Promise.resolve({ok:true,cancelled:false,skipped:true,currentFingerprint:currentFingerprint,previousRemote:null});
+  }
   if(adapter.name==="remote"){
     /* V0.6 PoC → 真实 Cloudflare（Worker + Durable Object）：服务端 revision compare-and-set。
-     * baseRevision=上次成功同步的云端 revision（syncedRevision，不是本地脏计数器 revision）；
+     * baseRevision=最近一次已知的云端 revision（cloudRevision）；本地编辑不推进它；
      * 云端不一致 → HTTP 409，必须先拉取最新版本，绝不静默覆盖；
      * 新 revision / updatedAt 均由服务端生成。 */
-    var payload={baseRevision:+localMeta.syncedRevision||0, schemaVersion:6,
-      deviceId:localMeta.deviceId, state:snap};
+    var payload={baseRevision:meta.cloudRevision, schemaVersion:6,
+      deviceId:meta.deviceId, state:snap};
     return adapter.put(payload).then(function(saved){
-      return {ok:true,cancelled:false,
+      return {ok:true,cancelled:false,skipped:false,currentFingerprint:currentFingerprint,
         envelope:saved||{metadata:{revision:payload.baseRevision}},previousRemote:null};
     });
   }
   return adapter.get().then(function(remote){
-    var localRev=+localMeta.revision||0, remoteRev=remote?+remote.metadata.revision:0;
-    var prompt="";
-    if(remote && remoteRev>localRev) prompt="云端 revision "+remoteRev+" 高于本地 "+localRev+"。继续上传会覆盖较新的云端数据，是否继续？";
-    else if(remote && localRev>remoteRev) prompt="本地 revision "+localRev+" 高于云端 "+remoteRev+"。是否确认上传本地版本？";
-    else if(remote && JSON.stringify(remote.state)!==JSON.stringify(snap)) prompt="本地与云端 revision 相同，但内容不同。是否确认用本地数据覆盖云端？";
-    return (prompt?askSyncConfirmation(confirmFn,prompt):Promise.resolve(true)).then(function(allowed){
-      if(!allowed) return {ok:false,cancelled:true,remote:remote};
-      var nextRevision=remote
-        ? (remoteRev>=localRev?remoteRev+1:localRev)
-        : Math.max(1,localRev);
-      var envelope=buildSyncEnvelope(localState,localMeta,nextRevision);
-      return adapter.put(envelope).then(function(saved){
-        return {ok:true,cancelled:false,envelope:saved||envelope,previousRemote:remote};
-      });
+    var remoteRev=remote?+remote.metadata.revision:0;
+    if(remoteRev!==meta.cloudRevision){
+      throw new Error("云端已经有更新（当前 revision "+remoteRev+"），请先拉取最新版本。");
+    }
+    var envelope=buildSyncEnvelope(localState,meta,remoteRev+1);
+    return adapter.put(envelope).then(function(saved){
+      return {ok:true,cancelled:false,skipped:false,currentFingerprint:currentFingerprint,
+        envelope:saved||envelope,previousRemote:remote};
     });
   });
 }
 function downloadStateWithAdapter(adapter,localState,localMeta,confirmFn){
-  var snap=stateSnapshotForSync(localState);
+  var meta=normalizeSyncMeta(localMeta), content=syncContentState(localState,meta);
   return adapter.get().then(function(remote){
     if(!remote) throw new Error("云端尚无可拉取的数据");
-    var localRev=+localMeta.revision||0, remoteRev=+remote.metadata.revision;
+    var remoteRev=+remote.metadata.revision;
     var prompt="";
-    if(remoteRev>localRev) prompt="云端 revision "+remoteRev+" 高于本地 "+localRev+"。拉取后将替换本地业务数据，是否继续？";
-    else if(localRev>remoteRev) prompt="本地 revision "+localRev+" 高于云端 "+remoteRev+"。拉取会丢弃尚未上传的本地修改，是否继续？";
-    else if(JSON.stringify(remote.state)!==JSON.stringify(snap)) prompt="本地与云端 revision 相同，但内容不同。是否确认用云端数据替换本地？";
+    if(remoteRev>meta.cloudRevision) prompt="云端 revision "+remoteRev+" 高于本地已知版本 "+meta.cloudRevision+"。拉取后将替换本地业务数据，是否继续？";
+    else if(content.dirty===true) prompt="本地有未同步修改。拉取会丢弃这些修改，是否继续？";
+    else if(!content.baselineKnown) prompt="本机尚未建立同步内容基线。是否确认用云端数据替换本地？";
+    else if(remoteRev<meta.cloudRevision) prompt="云端 revision "+remoteRev+" 低于本地已知版本 "+meta.cloudRevision+"。是否仍要拉取？";
+    else if(fingerprintSyncState(remote.state)!==content.currentFingerprint) prompt="本地与云端 revision 相同，但业务内容不同。是否确认用云端数据替换本地？";
     return (prompt?askSyncConfirmation(confirmFn,prompt):Promise.resolve(true)).then(function(allowed){
       return allowed?{ok:true,cancelled:false,envelope:remote}:{ok:false,cancelled:true,envelope:remote};
     });
@@ -1671,9 +1737,8 @@ function saveState(options){
     localStorage.setItem(LS_KEY, JSON.stringify(state));
     if(options&&options.syncedMetadata){
       var localMeta=loadSyncMeta(), remoteMeta=options.syncedMetadata;
-      writeSyncMeta({revision:+remoteMeta.revision,updatedAt:String(remoteMeta.updatedAt||syncNowISO()),
-        deviceId:localMeta.deviceId,lastSyncAt:syncNowISO(),lastAction:"download",
-        lastRemoteDeviceId:String(remoteMeta.deviceId||""),syncedRevision:+remoteMeta.revision});
+      writeSyncMeta(syncMetaAfterSuccess(localMeta,remoteMeta,
+        options.syncedFingerprint||fingerprintSyncState(state),options.syncAction||"download"));
     }else touchLocalSyncMeta();
     renderSyncStatus();
     return true;
@@ -1690,18 +1755,17 @@ var eventsBound = false;     /* 事件只绑定一次（init 重复调用安全�
 var modalBound = false;
 var syncBusy = false;
 
-function setSyncStatus(message,kind){
+function setSyncStatus(message,kind,detail){
   if(typeof document==="undefined") return;
   var el=document.getElementById("syncStatus"); if(!el) return;
   el.textContent=message; el.className="sync-status"+(kind?" "+kind:"");
+  el.title=detail||"";
 }
 function renderSyncStatus(){
-  if(typeof document==="undefined" || syncBusy) return;
-  var c=loadSyncConfig(), m=loadSyncMeta();
-  var label=c.adapter==="remote"?"远程":"Mock";
-  var last=m.lastSyncAt?("｜上次同步 "+m.lastSyncAt.slice(0,19).replace("T"," ")):"｜尚未同步";
-  var dirty=m.lastAction==="local"&&m.lastSyncAt;
-  setSyncStatus("同步："+label+"｜本地 r"+m.revision+last+(dirty?"｜有未上传修改":""),dirty?"dirty":(m.lastSyncAt?"ok":""));
+  if(typeof document==="undefined" || syncBusy || !state) return;
+  var m=loadSyncMeta(), info=syncStatusInfo(state,m);
+  var detail=m.lastSyncedAt?("最近同步："+m.lastSyncedAt.slice(0,19).replace("T"," ")):"尚未建立同步基线";
+  setSyncStatus(info.message,info.kind,detail);
 }
 function setSyncBusy(busy,message){
   syncBusy=!!busy;
@@ -1745,13 +1809,13 @@ function browserSyncConfirm(message){ return typeof window!=="undefined" && type
 function uploadToCloud(){
   if(syncBusy) return;
   var config=loadSyncConfig(), meta=loadSyncMeta(), adapter=getSyncAdapter(config);
-  setSyncBusy(true,"同步：正在读取云端版本…");
+  setSyncBusy(true,"同步：正在检查本地内容…");
   uploadStateWithAdapter(adapter,state,meta,browserSyncConfirm).then(function(result){
     if(result.cancelled){ setSyncBusy(false); showToast("已取消上传，本地与云端均未改动"); return; }
+    if(result.skipped){ setSyncBusy(false); showToast("无内容变化，无需上传"); return; }
     var rm=result.envelope.metadata;
-    writeSyncMeta({revision:+rm.revision,updatedAt:String(rm.updatedAt),deviceId:meta.deviceId,
-      lastSyncAt:syncNowISO(),lastAction:"upload",lastRemoteDeviceId:String(rm.deviceId||""),syncedRevision:+rm.revision});
-    setSyncBusy(false); setSyncStatus("同步：上传成功｜云端 r"+rm.revision,"ok");
+    writeSyncMeta(syncMetaAfterSuccess(meta,rm,result.currentFingerprint,"upload"));
+    setSyncBusy(false);
     showToast("已手动上传到"+(config.adapter==="remote"?"远程后端":"本机 Mock")+" ✓");
   }).catch(function(error){
     setSyncBusy(false); setSyncStatus("同步失败："+(error&&error.message?error.message:error),"err");
@@ -1767,11 +1831,12 @@ function downloadFromCloud(){
     var imported=importJSONString(JSON.stringify(result.envelope.state));
     if(!imported.ok || imported.state.schemaVersion!==6) throw new Error(imported.error||"云端 state 无法按 schemaVersion 6 载入");
     state=imported.state;
-    if(!saveState({syncedMetadata:result.envelope.metadata})){
+    var pulledFingerprint=fingerprintSyncState(state);
+    if(!saveState({syncedMetadata:result.envelope.metadata,syncedFingerprint:pulledFingerprint,syncAction:"download"})){
       state=previousState; throw new Error("云端数据已读取，但本地保存失败");
     }
     var ot=document.getElementById("opTime"); if(ot) ot.value=state.opTime||"10:00";
-    renderAll(); setSyncBusy(false); setSyncStatus("同步：拉取成功｜本地 r"+result.envelope.metadata.revision,"ok");
+    renderAll(); setSyncBusy(false);
     showToast("已从"+(config.adapter==="remote"?"远程后端":"本机 Mock")+"拉取并保存 ✓");
   }).catch(function(error){
     state=previousState; setSyncBusy(false); setSyncStatus("同步失败："+(error&&error.message?error.message:error),"err");
@@ -3641,7 +3706,7 @@ function runSelfTests(){
     var ok9 = false, detail9 = "";
     try{
       if(typeof localStorage!=="undefined" && localStorage){
-        var st9 = {opTime:"09:30", experiments:[sampleExperiment(0), sampleExperiment(3)], executions:{}};
+        var st9 = {schemaVersion:6, opTime:"09:30", experiments:[sampleExperiment(0), sampleExperiment(3)], executions:{}};
         st9.executions[exKey("T0",2)] = {putinConfirmed:true, putinTime:"2026-09-03T10:00", completeConfirmed:true, takeoutTime:"2026-09-05T10:00", qty:"1", person:"", note:""};
         ensurePlanTimes(st9);   /* 与 loadState 的迁移一致（V0.4.3） */
         st9.executions = normalizeExecutionsMap(st9.executions);   /* V0.5.4：与 loadState 的规范化一致 */

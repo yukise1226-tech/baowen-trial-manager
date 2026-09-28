@@ -57,6 +57,20 @@ function fixtureState() {
   };
 }
 
+function syncedMeta(state, revision, deviceId, remoteDeviceId = deviceId) {
+  return {
+    metadataVersion: 2,
+    cloudRevision: revision,
+    cloudUpdatedAt: `2026-09-27T00:0${Math.min(revision, 9)}:00.000Z`,
+    deviceId,
+    lastSyncedFingerprint: app.fingerprintSyncState(state),
+    lastSyncedAt: '2026-09-27T00:10:00.000Z',
+    lastAction: 'download',
+    lastRemoteDeviceId: remoteDeviceId,
+    localMutationSeq: 0
+  };
+}
+
 let passed = 0;
 async function test(id, name, fn) {
   try {
@@ -77,11 +91,11 @@ async function test(id, name, fn) {
   const adapter = app.createRemoteSyncAdapter({endpoint}, fetch, TOKEN);
 
   let stateA = fixtureState();
-  let metaA = {revision: 0, syncedRevision: 0, updatedAt: '', deviceId: 'device-A'};
+  let metaA = {cloudRevision: 0, lastSyncedFingerprint: '', deviceId: 'device-A'};
   let stateB = fixtureState();
   stateB.experiments = [];
   stateB.executions = {};
-  let metaB = {revision: 0, syncedRevision: 0, updatedAt: '', deviceId: 'device-B'};
+  let metaB = {cloudRevision: 0, lastSyncedFingerprint: '', deviceId: 'device-B'};
 
   await test('SYNC-01', 'A 首次上传（baseRevision=0）→ 服务端 revision 1 + 完整 metadata，云端保存整份 state', async () => {
     const result = await app.uploadStateWithAdapter(adapter, stateA, metaA, () => true);
@@ -90,8 +104,7 @@ async function test(id, name, fn) {
     assert.equal(result.envelope.metadata.revision, 1);
     assert.equal(result.envelope.metadata.deviceId, 'device-A');
     assert.ok(result.envelope.metadata.updatedAt);
-    metaA.revision = 1;
-    metaA.syncedRevision = 1;
+    metaA = app.syncMetaAfterSuccess(metaA, result.envelope.metadata, result.currentFingerprint, 'upload');
     const cloud = mock.getEnvelope();
     assert.equal(cloud.metadata.revision, 1);
     assert.equal(cloud.state.schemaVersion, 6);
@@ -101,10 +114,9 @@ async function test(id, name, fn) {
   await test('SYNC-02', 'B 拉取 A 数据，远端较新时先确认并完整保留 55℃/36℃', async () => {
     let prompt = '';
     const result = await app.downloadStateWithAdapter(adapter, stateB, metaB, message => { prompt = message; return true; });
-    assert.match(prompt, /云端 revision 1 高于本地 0/);
+    assert.match(prompt, /云端 revision 1 高于本地已知版本 0/);
     stateB = result.envelope.state;
-    metaB = {revision: result.envelope.metadata.revision, syncedRevision: result.envelope.metadata.revision,
-      updatedAt: result.envelope.metadata.updatedAt, deviceId: 'device-B'};
+    metaB = syncedMeta(stateB, result.envelope.metadata.revision, 'device-B', result.envelope.metadata.deviceId);
     assert.equal(stateB.schemaVersion, 6);
     assert.equal(stateB.experiments.find(item => item.id === 'E55').condition, '55±1℃');
     assert.equal(stateB.experiments.find(item => item.id === 'E36').protocol36.totalDays, 60);
@@ -118,27 +130,29 @@ async function test(id, name, fn) {
     assert.equal(result.envelope.metadata.revision, 2);
     assert.equal(result.envelope.metadata.deviceId, 'device-B');
     assert.equal(mock.getEnvelope().state.executions['E36|36|sensory-14'].adjustedPlanTime, '2026-10-22T09:00');
+    metaB = app.syncMetaAfterSuccess(metaB, result.envelope.metadata, result.currentFingerprint, 'upload');
   });
 
   await test('SYNC-04', 'A 拉回 B 的 Day14 修改', async () => {
     let prompt = '';
     const result = await app.downloadStateWithAdapter(adapter, stateA, metaA, message => { prompt = message; return true; });
-    assert.match(prompt, /云端 revision 2 高于本地 1/);
+    assert.match(prompt, /云端 revision 2 高于本地已知版本 1/);
     stateA = result.envelope.state;
-    metaA.revision = result.envelope.metadata.revision;
-    metaA.syncedRevision = result.envelope.metadata.revision;
+    metaA = syncedMeta(stateA, result.envelope.metadata.revision, 'device-A', result.envelope.metadata.deviceId);
     assert.equal(stateA.executions['E36|36|sensory-14'].adjustedPlanTime, '2026-10-22T09:00');
     assert.equal(stateA.schemaVersion, 6);
   });
 
   await test('SYNC-05', '刷新等价的 localStorage 往返保留业务 state 与 revision', async () => {
     app.state = stateA;
-    app.writeSyncMeta({revision: 2, updatedAt: '2026-09-27T00:02:00.000Z', deviceId: 'device-A', lastSyncAt: '', lastAction: '', lastRemoteDeviceId: 'device-B'});
-    assert.equal(app.saveState({syncedMetadata: {revision: 2, updatedAt: '2026-09-27T00:02:00.000Z', deviceId: 'device-B'}}), true);
+    app.writeSyncMeta(metaA);
+    assert.equal(app.saveState({syncedMetadata: {revision: 2, updatedAt: '2026-09-27T00:02:00.000Z', deviceId: 'device-B'},
+      syncedFingerprint: app.fingerprintSyncState(stateA)}), true);
     const reloaded = app.loadState();
     assert.equal(reloaded.schemaVersion, 6);
     assert.equal(reloaded.executions['E36|36|sensory-14'].adjustedPlanTime, '2026-10-22T09:00');
-    assert.equal(app.loadSyncMeta().revision, 2);
+    assert.equal(app.loadSyncMeta().cloudRevision, 2);
+    assert.equal(app.syncContentState(reloaded, app.loadSyncMeta()).dirty, false);
   });
 
   await test('SYNC-06', '旧 revision 上传 → 409：云端不被覆盖，页面提示先拉取最新版本', async () => {
@@ -146,7 +160,7 @@ async function test(id, name, fn) {
     const stale = fixtureState();
     stale.experiments[0].note = '不得上传';
     await assert.rejects(
-      () => app.uploadStateWithAdapter(adapter, stale, {revision: 1, syncedRevision: 1, deviceId: 'device-C'}, () => true),
+      () => app.uploadStateWithAdapter(adapter, stale, syncedMeta(fixtureState(), 1, 'device-C'), () => true),
       /云端已经有更新（当前 revision 2），请先拉取最新版本/
     );
     assert.equal(JSON.stringify(mock.getEnvelope()), before);
@@ -156,10 +170,10 @@ async function test(id, name, fn) {
   await test('SYNC-07', '后端失败不改变本地 state 或 revision', async () => {
     const failing = app.createRemoteSyncAdapter({endpoint: `http://${address.address}:${address.port}/sync-fail`}, fetch, 'session-only-test-token');
     const beforeState = JSON.stringify(stateA);
-    const beforeRevision = metaA.revision;
+    const beforeMeta = JSON.stringify(metaA);
     await assert.rejects(() => app.downloadStateWithAdapter(failing, stateA, metaA, () => true), /HTTP 503/);
     assert.equal(JSON.stringify(stateA), beforeState);
-    assert.equal(metaA.revision, beforeRevision);
+    assert.equal(JSON.stringify(metaA), beforeMeta);
   });
 
   await test('SYNC-08', 'Mock adapter 与 remote adapter 使用同一 envelope 契约', async () => {
@@ -177,7 +191,7 @@ async function test(id, name, fn) {
     const wrong = app.createRemoteSyncAdapter({endpoint}, fetch, 'wrong-token');
     await assert.rejects(() => wrong.get(), /401/);
     await assert.rejects(
-      () => app.uploadStateWithAdapter(wrong, stateA, {revision: 2, syncedRevision: 2, deviceId: 'device-A'}, () => true),
+      () => app.uploadStateWithAdapter(wrong, {...stateA, opTime: '11:00'}, metaA, () => true),
       /401/
     );
     assert.equal(mock.getEnvelope().metadata.revision, 2);
@@ -188,13 +202,15 @@ async function test(id, name, fn) {
     await assert.rejects(() => noToken.get(), /401/);
   });
 
-  await test('SYNC-11', '同步后的本地编辑（脏计数+1）不影响 CAS：上传仍用 syncedRevision → 服务端 revision 3', async () => {
-    metaA.revision += 1;                    // 本地脏计数：仅代表“有未上传修改”
-    assert.equal(metaA.syncedRevision, 2);  // CAS 基准仍是上次同步的云端 revision
+  await test('SYNC-11', '同步后的本地编辑不影响 cloudRevision：上传仍以云端 r2 为 baseRevision → r3', async () => {
+    stateA.experiments[0].note = '本地修改';
+    assert.equal(metaA.cloudRevision, 2);
+    assert.equal(app.syncContentState(stateA, metaA).dirty, true);
     const result = await app.uploadStateWithAdapter(adapter, stateA, metaA, () => true);
     assert.equal(result.ok, true);
     assert.equal(result.envelope.metadata.revision, 3);
     assert.equal(mock.getEnvelope().metadata.revision, 3);
+    metaA = app.syncMetaAfterSuccess(metaA, result.envelope.metadata, result.currentFingerprint, 'upload');
   });
 
   await test('SYNC-12', '网络不可达（fetch 无 HTTP 响应）→ 通俗提示，不暴露底层错误', async () => {
@@ -203,6 +219,7 @@ async function test(id, name, fn) {
       () => app.downloadStateWithAdapter(unreachable, stateA, metaA, () => true),
       /无法连接远程服务器，本地数据未受影响/
     );
+    stateA.experiments[0].note = '网络失败前的本地修改';
     await assert.rejects(
       () => app.uploadStateWithAdapter(unreachable, stateA, metaA, () => true),
       /无法连接远程服务器，本地数据未受影响/

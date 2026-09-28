@@ -34,3 +34,12 @@
   弹窗适配屏幕、触控按钮 40px；不改 55℃/36℃/同步/schemaVersion 逻辑。
 - iPhone Safari 已能打开 Pages 并显示云端数据；桌面自动化 147/147、同步 12/12、36℃ 9/9；
   响应式最终效果等待用户真实 iPhone 截图验收。
+
+## Cloud Sync V1.1（未升稳定版）
+
+- `cloudRevision` 现在只代表最近一次成功上传/拉取确认的云端 CAS 版本；本地连续编辑不再增加或展示 revision。
+- 新增 `lastSyncedFingerprint` 与 `lastSyncedAt`；同步状态由业务 state fingerprint 动态计算，修改后恢复原值会自动回到“已同步”。同步 metadata 自身不参与 fingerprint。
+- 无内容变化的手动上传直接跳过，不发 GET/PUT，也不生成新云端 revision；真正上传仍只递增一次。
+- 旧 metadata 无 fingerprint 时保留云端 revision，并显示“同步状态待确认”；不把历史本地计数误认成云端版本。
+- 409 / 401 / 网络失败继续保护本地 state 与同步 metadata；不改 Worker/DO、55℃、36℃、`schemaVersion: 6`、手动同步模式。
+- 自动化：revision 专项 10/10、同步专项 12/12、36℃专项 9/9、HTML 内置回归 147/147、Worker 单测+集成 20/20；Chrome 四个真实交互场景通过。
