@@ -21,8 +21,8 @@
 | `openAdjust36Plan` / `refreshAdjust36Preview` | 36℃单点计划调整 | `adjust36Save`、`restore36Plan` |
 | `today36Row` / `task36TableHTML` | 36℃操作日程展示 | `36℃｜`、`task36Confirm` |
 | `operationDateStatus` / `operationDateStatusHTML` | 按计划操作时间返回日期可用性与官方日历覆盖状态，并生成只读冲突提示 | `custom-skip`、`calendar-unavailable`、`operation-date-note` |
-| `suggest55ConflictAlternatives` / `build55ConflictSummary` | 为 55℃节点生成保持 Day×24h 的双向只读候选，并汇总冲突与日历覆盖状态 | `offsetDays`、`holidayCoverageStatus`、`operation55SuggestionHTML` |
-| `build55GroupedConflictSuggestions` / `operation55GroupedPlanHTML` | 为同一 55℃试验的未确认冲突节点生成节前优先、长周期可合批的只读联合建议 | `advance-grouped`、`minimum-offset`、`operation-suggestion-joint` |
+| `suggest55ConflictAlternatives` / `build55ConflictSummary` | 为 55℃节点生成保持 Day×24h 的只后移候选（禁止提前），并汇总冲突与日历覆盖状态 | `offsetDays`、`holidayCoverageStatus`、`operation55SuggestionHTML` |
+| `build55GroupedConflictSuggestions` / `operation55GroupedPlanHTML` | 为同一 55℃试验的未确认冲突节点生成只后移、长周期可合批的只读联合建议 | `delay-grouped`、`minimum-offset`、`operation-suggestion-joint` |
 | `validate55GroupedSuggestionPlanForApply` / `apply55GroupedSuggestionPlan` / `apply55GroupedPlanConfirmHTML` | 联合建议人工确认采用：原子校验+一次性写入 adjustedPlanPutin，确认弹窗分组展示 | `groupedApplyOpen`、`groupedApplyYes`、`采用推荐方案` |
 | `exp55ConflictSummaryHTML` | 55℃试验级冲突摘要（数量+Day列表+联合调整建议入口），复用联合建议与采用流程 | `不可操作日冲突`、`查看联合调整建议` |
 | `open55GroupedApplyFromTrigger` | 排程页/操作日程/弹窗共用的“采用推荐方案”触发入口（重算→签名校验→校验→确认弹窗） | `groupedApplyOpen`、`groupedApplyYes` |

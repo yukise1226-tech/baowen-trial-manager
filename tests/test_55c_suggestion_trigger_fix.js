@@ -60,7 +60,7 @@ test('FIX-01', 'putin 可操作、takeout 为 holiday 时，待放入行显示�
   const putinMarkup = app.todayPutinRow(day3);
   assert.match(putinMarkup, /查看调整建议/);
   assert.match(putinMarkup, /法定节假日/);
-  assert.match(putinMarkup, /联合建议｜推荐：节前优先集中/);
+  assert.match(putinMarkup, /联合建议｜推荐：延后集中/);
   assert.match(putinMarkup, /采用推荐方案/);
 });
 

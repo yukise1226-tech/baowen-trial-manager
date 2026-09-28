@@ -458,7 +458,8 @@ function operationDateStatus(dt, targetState, provider){
   }};
 }
 /* 55℃冲突候选：只平移整组“放入 + 取出”，始终保持取出=放入+Day×24h。
- * 默认同时搜索前后 31 天；结果仅供查看，不写入 execution 或排程字段。 */
+ * 任务08.3 硬约束：只向后搜索（offsetDays>0），禁止任何早于当前有效计划放入的候选。
+ * 默认向后搜索 31 天；结果仅供查看，不写入 execution 或排程字段。 */
 function suggest55ConflictAlternatives(row, targetState, options){
   var opts=options&&typeof options==="object"?options:{};
   var provider=opts.provider&&typeof opts.provider.loadYear==="function"
@@ -470,8 +471,7 @@ function suggest55ConflictAlternatives(row, targetState, options){
   if(!isFinite(maxOffset) || maxOffset<1) maxOffset=31;
   maxOffset=Math.floor(maxOffset);
   var originalPutin=new Date(sourcePutin), out=[];
-  for(var offset=-maxOffset;offset<=maxOffset;offset++){
-    if(offset===0) continue;
+  for(var offset=1;offset<=maxOffset;offset++){
     var putin=addDays(originalPutin,offset), takeout=addDays(putin,day);
     var putinStatus=operationDateStatus(putin,targetState,provider);
     var takeoutStatus=operationDateStatus(takeout,targetState,provider);
@@ -485,10 +485,7 @@ function suggest55ConflictAlternatives(row, targetState, options){
       holidayCoverageSufficient:!!(putinStatus.holidayCalendar.available&&takeoutStatus.holidayCalendar.available)
     });
   }
-  out.sort(function(a,b){
-    var absDiff=Math.abs(a.offsetDays)-Math.abs(b.offsetDays);
-    return absDiff || b.offsetDays-a.offsetDays;
-  });
+  out.sort(function(a,b){ return a.offsetDays-b.offsetDays; });
   return out;
 }
 
@@ -531,31 +528,25 @@ function build55ConflictSummary(row, targetState, options){
 }
 
 /* 55℃多节点联合建议：只读取当前排程行与任务06候选，不改写 row/state。
- * Day<7 独立选择合理的小幅候选；Day>=7 在 7 天合理窗口内优先节前提前，
- * 再尽量减少共同放入日期。备选方案仅按单节点总偏移最小选择。 */
+ * 任务08.3：所有候选只后移（不得早于当前有效计划）；Day<7 独立选择最早合法后移；
+ * Day>=7 在合理窗口内优先减少共同放入批次。备选方案按单节点最小后移选择。 */
 function isUnconfirmed55SuggestionRow(row){
   if(!row || row.enabled===false || row.status==="不做") return false;
   if(row.ex && row.ex.putinConfirmed===true) return false;
   return row.status!=="进行中" && row.status!=="已完成";
 }
-function preferred55AdvanceCandidate(summary, maxOffsetDays){
-  var candidates=summary&&summary.candidates||[], limit=Math.max(1,Math.floor(+maxOffsetDays||7));
-  for(var i=0;i<candidates.length;i++){
-    if(candidates[i].offsetDays<0 && Math.abs(candidates[i].offsetDays)<=limit) return candidates[i];
-  }
+/* 任务08.3：Day<7 禁止提前，选择最早合法后移候选（候选列表本身已按 offsetDays 升序）。 */
+function earliest55DelayCandidate(summary){
+  var candidates=summary&&summary.candidates||[];
   return candidates.length?candidates[0]:null;
 }
 function reasonable55GroupedCandidates(summary, maxOffsetDays){
   var candidates=summary&&summary.candidates||[], limit=Math.max(1,Math.floor(+maxOffsetDays||7));
-  var advances=[], nearby=[];
+  var nearby=[];
   for(var i=0;i<candidates.length;i++){
-    if(Math.abs(candidates[i].offsetDays)<=limit){
-      nearby.push(candidates[i]);
-      if(candidates[i].offsetDays<0) advances.push(candidates[i]);
-    }
+    if(candidates[i].offsetDays>0 && candidates[i].offsetDays<=limit) nearby.push(candidates[i]);
   }
-  /* “能合理提前完成的优先提前”高于批次数与总偏移；没有合理提前时才允许节后候选。 */
-  if(advances.length) return advances;
+  /* 任务08.3：只允许后移；窗口内无合法后移时退回最早合法后移，保证冲突尽量可解决。 */
   if(nearby.length) return nearby;
   return candidates.length?[candidates[0]]:[];
 }
@@ -696,7 +687,7 @@ function build55GroupedConflictSuggestions(rows, targetState, options){
   for(var c=0;c<conflicts.length;c++) (conflicts[c].day<7?shortConflicts:longConflicts).push(conflicts[c]);
   var recommendedEntries=[], unresolved=0;
   for(var s=0;s<shortConflicts.length;s++){
-    var shortCandidate=preferred55AdvanceCandidate(shortConflicts[s],maxOffset);
+    var shortCandidate=earliest55DelayCandidate(shortConflicts[s]);
     if(shortCandidate) recommendedEntries.push({summary:shortConflicts[s],candidate:shortCandidate});
     else unresolved++;
   }
@@ -711,16 +702,16 @@ function build55GroupedConflictSuggestions(rows, targetState, options){
     if(grouped) recommendedEntries=recommendedEntries.concat(grouped.entries);
     else unresolved+=usableLong.length;
   }
-  var explanation="优先采用 "+maxOffset+" 天内可行的节前提前候选；Day<7 独立处理，Day≥7 在合理偏移内减少放入批次。";
+  var explanation="只允许不早于当前计划的延后候选；Day<7 选择最早合法后移，Day≥7 在 "+maxOffset+" 天窗口内优先减少放入批次。";
   if(unresolved) explanation+=" 另有 "+unresolved+" 个冲突节点未找到可行候选。";
-  var recommended=make55GroupedPlan(expId,conflicts,recommendedEntries,"advance-grouped",explanation);
+  var recommended=make55GroupedPlan(expId,conflicts,recommendedEntries,"delay-grouped",explanation);
 
   var minimumEntries=[];
   for(var m=0;m<conflicts.length;m++) if(conflicts[m].candidates.length){
     minimumEntries.push({summary:conflicts[m],candidate:conflicts[m].candidates[0]});
   }
   var minimum=make55GroupedPlan(expId,conflicts,minimumEntries,"minimum-offset",
-    "各节点采用 |offsetDays| 最小的候选；总偏移较小，但可能增加放入批次或包含节后日期。");
+    "各节点采用最小后移天数的候选；总延后较小，但可能增加放入批次。");
   recommended.alternatives=[];
   if(minimumEntries.length===recommendedEntries.length && grouped55PlanSignature(minimum)!==grouped55PlanSignature(recommended)){
     recommended.alternatives.push(minimum);
@@ -887,7 +878,7 @@ function offset55Text(offset){
 function operation55GroupedPlanHTML(plan, title){
   if(!plan || !plan.groups || !plan.groups.length) return "";
   var html='<div class="operation-suggestion-joint"><div class="operation-suggestion-joint-title">'+esc(title)+'</div>'
-    +'<div>总批次数：'+plan.batchCount+'；总 |偏移| '+plan.totalAbsOffsetDays+' 天；提前 '+plan.advanceCount+' 个，延后 '+plan.delayCount+' 个。</div>';
+    +'<div>总批次数：'+plan.batchCount+'；总延后 '+plan.totalAbsOffsetDays+' 天；延后 '+plan.delayCount+' 个。</div>';
   if(plan.coverageWarning){
     html+='<div class="operation-suggestion-warning">⚠ '+esc(plan.coverageWarning)+'；联合建议仅按已知规则筛选，不能视为完整确认。</div>';
   }
@@ -939,7 +930,7 @@ function operation55SuggestionHTML(row, targetState, conflictTime){
   var grouped=isUnconfirmed55SuggestionRow(row)
     ? build55GroupedConflictSuggestions(rows55ForGroupedSuggestion(row,targetState),targetState,{expId:row.expId}) : null;
   if(grouped){
-    html+=operation55GroupedPlanHTML(grouped,'联合建议｜推荐：节前优先集中');
+    html+=operation55GroupedPlanHTML(grouped,'联合建议｜推荐：延后集中');
     /* 任务08：仅当当前联合方案全部节点仍满足应用条件时提供采用入口；
      * 点击只打开确认弹窗，绝不直接写 state。 */
     if(validate55GroupedSuggestionPlanForApply(targetState,row.expId,grouped).ok){
@@ -976,6 +967,11 @@ function validate55GroupedSuggestionPlanForApply(targetState, expId, plan){
       if(!row || !isUnconfirmed55SuggestionRow(row)) return {ok:false,error:"Day"+day+" 已确认放入或状态已变化，整组未采用。"};
       var summary=build55ConflictSummary(row,targetState);
       if(!summary.conflictReasons.length) return {ok:false,error:"Day"+day+" 已无冲突，整组未采用（请重新查看调整建议）。"};
+      /* 任务08.3 第二道防线：即使旧 plan 对象仍含负偏移，也拒绝早于当前有效计划的放入 */
+      var effPutin=row.effectivePlanPutin||row.originalPlanPutin;
+      if(effPutin instanceof Date && !isNaN(effPutin.getTime()) && group.putin.getTime()<effPutin.getTime()){
+        return {ok:false,error:"Day"+day+" 推荐放入早于当前有效计划，整组未采用。"};
+      }
       var putinStatus=operationDateStatus(group.putin,targetState);
       var takeoutStatus=operationDateStatus(takeout,targetState);
       if(!putinStatus.available) return {ok:false,error:"Day"+day+" 推荐放入日期不可操作，整组未采用。"};

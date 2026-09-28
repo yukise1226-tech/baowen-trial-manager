@@ -98,11 +98,12 @@ test('CLICK-02', '确认弹窗展示经典09/22的3个推荐放入批次', () =>
   const a = attrsFrom(app.exp55ConflictSummaryHTML(item, state));
   const btn = fakeTarget({'data-act': 'groupedApplyOpen', 'data-id': a.id, 'data-sig': a.sig});
   app.onPlanClick({target: btn, currentTarget: btn});
-  assert.match(modalHTML(), /09-15 10:00 放入：/);
-  assert.match(modalHTML(), /09-18 10:00 放入：/);
-  assert.match(modalHTML(), /09-21 10:00 放入：/);
-  assert.match(modalHTML(), /Day9 → 09-24 10:00/);
-  assert.match(modalHTML(), /Day12 → 09-30 10:00/);
+  assert.match(modalHTML(), /09-28 10:00 放入：/);
+  assert.match(modalHTML(), /09-29 10:00 放入：/);
+  assert.match(modalHTML(), /10-09 10:00 放入：/);
+  assert.match(modalHTML(), /Day9 → 10-08 10:00/);
+  assert.match(modalHTML(), /Day12 → 10-10 10:00/);
+  assert.match(modalHTML(), /Day3 → 10-12 10:00/);
 });
 
 test('CLICK-03', '点击取消不修改 state', () => {

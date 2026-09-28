@@ -169,7 +169,7 @@ test('APPLY-10', '存在已确认放入节点时整组拒绝，且其他节点�
 test('APPLY-11', '建议生成后日期规则变化导致候选失效时整组拒绝', () => {
   const state = classicState();
   const plan = grouped(state);
-  app.addCustomSkipDate(state, '2026-09-15');   /* 联合批次放入日之一变为不可操作 */
+  app.addCustomSkipDate(state, '2026-09-28');   /* 新联合方案的放入日之一变为不可操作 */
   const before = JSON.stringify(state.executions);
   const result = app.apply55GroupedSuggestionPlan(state, 'E55', plan);
   assert.equal(result.ok, false);
@@ -192,29 +192,29 @@ test('APPLY-13', '操作日程成功显示调整后的日期', () => {
   const state = classicState();
   apply(state);
   const rows = rowsOf(state);
-  const ev21 = app.eventsForDate(rows, '2026-09-21');
-  assert.ok(ev21.putins.some(r => r.expId === 'E55' && r.day === 3));
+  const ev1009 = app.eventsForDate(rows, '2026-10-09');
+  assert.ok(ev1009.putins.some(r => r.expId === 'E55' && r.day === 3));
   const ev22 = app.eventsForDate(rows, '2026-09-22');
   assert.ok(!ev22.putins.some(r => r.expId === 'E55' && r.day === 3));   /* 原放入日不再有 Day3 */
-  const ev15 = app.eventsForDate(rows, '2026-09-15');
-  assert.deepEqual(Array.from(ev15.putins.filter(r => r.expId === 'E55').map(r => r.day).sort((a,b) => a-b)), [9,13,14]);
-  const ev18 = app.eventsForDate(rows, '2026-09-18');
-  assert.deepEqual(Array.from(ev18.putins.filter(r => r.expId === 'E55').map(r => r.day).sort((a,b) => a-b)), [10,11,12]);
+  const ev0928 = app.eventsForDate(rows, '2026-09-28');
+  assert.deepEqual(Array.from(ev0928.putins.filter(r => r.expId === 'E55').map(r => r.day).sort((a,b) => a-b)), [10,11,12,14]);
+  const ev0929 = app.eventsForDate(rows, '2026-09-29');
+  assert.deepEqual(Array.from(ev0929.putins.filter(r => r.expId === 'E55').map(r => r.day).sort((a,b) => a-b)), [9,13]);
 });
 
 test('APPLY-14', 'CSV有效计划使用调整后日期，同时原计划追溯列仍保留原值', () => {
   const state = classicState();
   apply(state);
   const csv = app.buildCsvTexts(state, app.computeSchedule(state));
-  /* 操作日程 CSV：Day3 计划时间=09-21 10:00，原计划时间=09-22 10:00 */
+  /* 操作日程 CSV：Day3 计划时间=10-09 10:00，原计划时间=09-22 10:00 */
   const op3 = csv.ops.split('\n').find(line => line.includes('55-CLASSIC') && line.includes(',3,放入'));
   assert.ok(op3);
-  assert.ok(op3.startsWith('2026-09-21 10:00'));
+  assert.ok(op3.startsWith('2026-10-09 10:00'));
   assert.ok(op3.includes('2026-09-22 10:00'));
   /* 排程 CSV：Day3 计划放入=调整后，原计划放入列保持 09-22 10:00 */
   const plan3 = csv.plan.split('\n').find(line => line.includes('55-CLASSIC') && line.includes(',3,'));
   assert.ok(plan3);
-  assert.ok(plan3.includes('2026-09-21 10:00'));
+  assert.ok(plan3.includes('2026-10-09 10:00'));
   assert.ok(plan3.includes('2026-09-22 10:00'));
   assert.ok(plan3.includes('（已调整）'));
 });
@@ -241,16 +241,16 @@ test('APPLY-UI-01', '确认弹窗按批次分组展示放入/取出时间，且�
   const exp = app.findExp('E55');
   const markup = app.apply55GroupedPlanConfirmHTML(exp, plan);
   assert.match(markup, /将调整以下55℃节点：/);
-  assert.match(markup, /09-15 10:00 放入：/);
-  assert.match(markup, /Day9 → 09-24 10:00/);
-  assert.match(markup, /Day13 → 09-28 10:00/);
-  assert.match(markup, /Day14 → 09-29 10:00/);
-  assert.match(markup, /09-18 10:00 放入：/);
-  assert.match(markup, /Day10 → 09-28 10:00/);
-  assert.match(markup, /Day11 → 09-29 10:00/);
-  assert.match(markup, /Day12 → 09-30 10:00/);
-  assert.match(markup, /09-21 10:00 放入：/);
-  assert.match(markup, /Day3 → 09-24 10:00/);
+  assert.match(markup, /09-28 10:00 放入：/);
+  assert.match(markup, /Day10 → 10-08 10:00/);
+  assert.match(markup, /Day11 → 10-09 10:00/);
+  assert.match(markup, /Day12 → 10-10 10:00/);
+  assert.match(markup, /Day14 → 10-12 10:00/);
+  assert.match(markup, /09-29 10:00 放入：/);
+  assert.match(markup, /Day9 → 10-08 10:00/);
+  assert.match(markup, /Day13 → 10-12 10:00/);
+  assert.match(markup, /10-09 10:00 放入：/);
+  assert.match(markup, /Day3 → 10-12 10:00/);
   assert.match(markup, /仅调整上述冲突节点，无冲突节点保持原计划。/);
   assert.match(markup, /data-act="groupedApplyYes"/);
   assert.match(markup, />确认采用</);

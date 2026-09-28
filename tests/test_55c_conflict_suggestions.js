@@ -112,33 +112,33 @@ test('SUGGEST-08', '所有候选放入与取出均为可操作日', () => {
   }
 });
 
-test('SUGGEST-09', '前后都有候选时按 |offsetDays| 升序', () => {
+test('SUGGEST-09', '候选只后移并按 offsetDays 升序', () => {
   const state = app.defaultState();
   app.addCustomSkipDate(state, '2026-08-18');
   const candidates = app.build55ConflictSummary(rowAt('2026-08-18T10:00', 2), state).candidates;
-  assert.ok(candidates.some(candidate => candidate.offsetDays < 0));
-  assert.ok(candidates.some(candidate => candidate.offsetDays > 0));
+  assert.ok(candidates.length > 0);
+  assert.ok(candidates.every(candidate => candidate.offsetDays > 0));
   for (let i = 1; i < candidates.length; i++) {
-    assert.ok(Math.abs(candidates[i - 1].offsetDays) <= Math.abs(candidates[i].offsetDays));
+    assert.ok(candidates[i - 1].offsetDays <= candidates[i].offsetDays);
   }
 });
 
-test('SUGGEST-10', '相同绝对偏移时优先较晚日期', () => {
+test('SUGGEST-10', '最小后移候选排在最前', () => {
   const state = app.defaultState();
   app.addCustomSkipDate(state, '2026-08-18');
   const candidates = app.build55ConflictSummary(rowAt('2026-08-18T10:00', 2), state).candidates;
-  assert.ok(candidates.findIndex(candidate => candidate.offsetDays === 1)
-    < candidates.findIndex(candidate => candidate.offsetDays === -1));
+  assert.ok(candidates[0].offsetDays <= candidates[candidates.length - 1].offsetDays);
+  assert.equal(candidates[0].offsetDays, Math.min(...Array.from(candidates, c => c.offsetDays)));
 });
 
-test('SUGGEST-11', '2026-09-22 经典55℃案例 Day3 给出候选', () => {
+test('SUGGEST-11', '2026-09-22 经典55℃案例 Day3 给出最早合法后移候选', () => {
   const state = app.defaultState();
   const summary = app.build55ConflictSummary(classicDay3(state), state);
   assert.equal(app.fmtDT(summary.originalPutin), '2026-09-22 10:00');
   assert.equal(app.fmtDT(summary.originalTakeout), '2026-09-25 10:00');
-  assert.equal(summary.candidates[0].offsetDays, -1);
-  assert.equal(app.fmtDT(summary.candidates[0].putin), '2026-09-21 10:00');
-  assert.equal(app.fmtDT(summary.candidates[0].takeout), '2026-09-24 10:00');
+  assert.equal(summary.candidates[0].offsetDays, 17);
+  assert.equal(app.fmtDT(summary.candidates[0].putin), '2026-10-09 10:00');
+  assert.equal(app.fmtDT(summary.candidates[0].takeout), '2026-10-12 10:00');
 });
 
 test('SUGGEST-12', '生成建议前后 computeSchedule().rows JSON 完全一致', () => {
