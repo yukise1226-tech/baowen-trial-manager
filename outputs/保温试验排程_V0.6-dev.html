@@ -65,6 +65,13 @@ td .cellwrap{min-width:96px;}
 .operation-date-note{display:block;margin-top:3px;font-size:11.5px;line-height:1.35;white-space:normal;font-weight:600;}
 .operation-date-note.conflict{color:var(--red);}
 .operation-date-note.coverage{color:var(--amber);}
+.operation-suggestion{margin-top:4px;font-size:11.5px;line-height:1.45;white-space:normal;color:var(--ink);}
+.operation-suggestion summary{color:var(--blue);cursor:pointer;font-weight:600;user-select:none;}
+.operation-suggestion-box{min-width:300px;max-width:430px;margin-top:4px;padding:7px 9px;
+  border:1px solid #c9d8ee;border-radius:6px;background:var(--blue-bg);}
+.operation-suggestion-box ul{margin:5px 0 0;padding-left:18px;}
+.operation-suggestion-box li{margin:2px 0;}
+.operation-suggestion-warning{color:var(--amber);font-weight:600;margin-top:4px;}
 .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;}
 .badge.ok{background:var(--green-bg);color:var(--green);}
 .badge.draft{background:var(--amber-bg);color:var(--amber);}
@@ -446,6 +453,78 @@ function operationDateStatus(dt, targetState, provider){
     source:calendar.source,version:calendar.version,sourceUrl:calendar.sourceUrl
   }};
 }
+/* 55℃冲突候选：只平移整组“放入 + 取出”，始终保持取出=放入+Day×24h。
+ * 默认同时搜索前后 31 天；结果仅供查看，不写入 execution 或排程字段。 */
+function suggest55ConflictAlternatives(row, targetState, options){
+  var opts=options&&typeof options==="object"?options:{};
+  var provider=opts.provider&&typeof opts.provider.loadYear==="function"
+    ? opts.provider : chinaHolidayCalendarProvider;
+  var day=+(row&&row.day), sourcePutin=row&&(row.effectivePlanPutin||row.putinActual||row.originalPlanPutin);
+  if(!(sourcePutin instanceof Date) || isNaN(sourcePutin.getTime()) || !isFinite(day) || day<0) return [];
+  day=Math.floor(day);
+  var maxOffset=+opts.maxOffsetDays;
+  if(!isFinite(maxOffset) || maxOffset<1) maxOffset=31;
+  maxOffset=Math.floor(maxOffset);
+  var originalPutin=new Date(sourcePutin), out=[];
+  for(var offset=-maxOffset;offset<=maxOffset;offset++){
+    if(offset===0) continue;
+    var putin=addDays(originalPutin,offset), takeout=addDays(putin,day);
+    var putinStatus=operationDateStatus(putin,targetState,provider);
+    var takeoutStatus=operationDateStatus(takeout,targetState,provider);
+    if(!putinStatus.available || !takeoutStatus.available) continue;
+    out.push({
+      putin:putin,
+      takeout:takeout,
+      offsetDays:offset,
+      putinStatus:putinStatus,
+      takeoutStatus:takeoutStatus,
+      holidayCoverageSufficient:!!(putinStatus.holidayCalendar.available&&takeoutStatus.holidayCalendar.available)
+    });
+  }
+  out.sort(function(a,b){
+    var absDiff=Math.abs(a.offsetDays)-Math.abs(b.offsetDays);
+    return absDiff || b.offsetDays-a.offsetDays;
+  });
+  return out;
+}
+
+/* 55℃节点冲突摘要：读取当前有效计划，不修改 row/state。 */
+function build55ConflictSummary(row, targetState, options){
+  var opts=options&&typeof options==="object"?options:{};
+  var provider=opts.provider&&typeof opts.provider.loadYear==="function"
+    ? opts.provider : chinaHolidayCalendarProvider;
+  var day=+(row&&row.day), sourcePutin=row&&(row.effectivePlanPutin||row.putinActual||row.originalPlanPutin);
+  if(!(sourcePutin instanceof Date) || isNaN(sourcePutin.getTime()) || !isFinite(day) || day<0){
+    return {expId:row&&row.expId||"",day:row&&row.day,originalPutin:null,originalTakeout:null,
+      conflictReason:"invalid-date",conflictReasons:[],putinStatus:null,takeoutStatus:null,
+      holidayCoverageStatus:"insufficient",coverageWarning:"官方节假日覆盖不足",candidates:[]};
+  }
+  day=Math.floor(day);
+  var originalPutin=new Date(sourcePutin), originalTakeout=addDays(originalPutin,day);
+  var putinStatus=operationDateStatus(originalPutin,targetState,provider);
+  var takeoutStatus=operationDateStatus(originalTakeout,targetState,provider);
+  var reasons=[];
+  if(!putinStatus.available) reasons.push({action:"putin",reason:putinStatus.reason});
+  if(!takeoutStatus.available) reasons.push({action:"takeout",reason:takeoutStatus.reason});
+  var candidates=reasons.length?suggest55ConflictAlternatives(row,targetState,opts):[];
+  var coverageSufficient=!!(putinStatus.holidayCalendar.available&&takeoutStatus.holidayCalendar.available);
+  for(var i=0;i<candidates.length;i++){
+    if(!candidates[i].holidayCoverageSufficient){ coverageSufficient=false; break; }
+  }
+  return {
+    expId:row.expId||"",
+    day:day,
+    originalPutin:originalPutin,
+    originalTakeout:originalTakeout,
+    conflictReason:reasons.length?reasons[0].reason:"available",
+    conflictReasons:reasons,
+    putinStatus:putinStatus,
+    takeoutStatus:takeoutStatus,
+    holidayCoverageStatus:coverageSufficient?"complete":"insufficient",
+    coverageWarning:coverageSufficient?"":"官方节假日覆盖不足",
+    candidates:candidates
+  };
+}
 function nextOperationDateAtOrAfter(dt, rules){
   if(!(dt instanceof Date) || isNaN(dt.getTime())) return null;
   var next=new Date(dt);
@@ -599,6 +678,24 @@ function operationDateStatusHTML(dt, targetState){
     html+='<span class="operation-date-note coverage">该年份官方节假日数据未加载/不可用</span>';
   }
   return html;
+}
+function operation55SuggestionHTML(row, targetState, conflictTime){
+  if(!conflictTime) return "";
+  var conflictStatus=operationDateStatus(conflictTime,targetState);
+  if(conflictStatus.available) return "";
+  var summary=build55ConflictSummary(row,targetState), candidates=summary.candidates.slice(0,6);
+  if(!candidates.length) return "";
+  var html='<details class="operation-suggestion"><summary>查看调整建议</summary>'
+    +'<div class="operation-suggestion-box"><div>只读候选；每组都保持 Day'+esc(summary.day)+' 的 '+esc(summary.day*24)+' 小时间隔，不会自动修改计划。</div>';
+  if(summary.coverageWarning){
+    html+='<div class="operation-suggestion-warning">⚠ '+esc(summary.coverageWarning)+'；候选仅按周末与自定义跳过日等已知规则筛选。</div>';
+  }
+  html+='<ul>';
+  for(var i=0;i<candidates.length;i++){
+    var c=candidates[i], offsetText=c.offsetDays>0?'延后 '+c.offsetDays+' 天':'提前 '+Math.abs(c.offsetDays)+' 天';
+    html+='<li><b>'+esc(offsetText)+'</b>：放入 '+esc(fmtDT(c.putin))+' → 取出 '+esc(fmtDT(c.takeout))+'</li>';
+  }
+  return html+'</ul></div></details>';
 }
 /* Date → datetime-local 文本（调整计划弹窗用） */
 function fmtDL(dt){ return ymdOf(dt)+"T"+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
@@ -3481,7 +3578,8 @@ function todayPutinRow(r){
   return '<tr data-day="'+r.day+'">'
     + '<td class="dt">'+(planT ? '<span class="dt" title="'+planTitle+'">'+esc(fmtCompact(planT))
       + ((r.status==="未放入" && r.adjusted) ? '<span class="adjmark">已调整</span>' : "")+'</span>'
-      : '<span class="muted">—</span>')+operationDateStatusHTML(planT,state)+'</td>'
+      : '<span class="muted">—</span>')+operationDateStatusHTML(planT,state)
+      +operation55SuggestionHTML(r,state,planT)+'</td>'
     + '<td><span class="tasktype">55℃·放入</span></td>'
     + '<td>'+esc(r.no)+'</td>'
     + '<td>'+esc(r.project||"")+'</td>'
@@ -3529,7 +3627,8 @@ function todayTakeoutRow(r){
   }
   var planT=currentTakeoutOf(r);
   return '<tr data-day="'+r.day+'">'
-    + '<td class="dt">'+todayTimeCell(planT)+operationDateStatusHTML(planT,state)+'</td>'   /* 进行中=当前预计取出 */
+    + '<td class="dt">'+todayTimeCell(planT)+operationDateStatusHTML(planT,state)
+    +operation55SuggestionHTML(r,state,planT)+'</td>'   /* 进行中=当前预计取出 */
     + '<td><span class="tasktype">55℃·取出</span></td>'
     + '<td>'+esc(r.no)+'</td>'
     + '<td>'+esc(r.project||"")+'</td>'
