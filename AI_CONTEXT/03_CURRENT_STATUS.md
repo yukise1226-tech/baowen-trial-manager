@@ -8,7 +8,7 @@
 - 当前 Git 分支：`dev-v0.7`；从 `dev-v0.6` 继续开发，未合并 `main`；本包自身提交以仓库 `git log -1` 为准。
 - `v0.5.4.1-stable` tag：**未创建**；没有可可靠定位的历史稳定提交，不得给现有 V0.6-dev 提交误打该 tag。
 
-## V0.7 统一日期规则：任务01～09.2已完成
+## V0.7 统一日期规则：任务01～09.3已完成
 
 - 已有 `customSkipDates`、`holidayDates`、`workdayOverrides`、2026 中国官方节假日 provider 与 `isOperationDateAvailable()`。
 - `operationDateStatus()` 已按计划操作时间返回 `available`、`reason`、`date` 及官方日历覆盖状态；`customSkipDates` 优先级最高，调休上班日覆盖普通周末。
@@ -23,6 +23,7 @@
 - 任务09已完成：联合方案优化目标改为“最终取出时间尽量靠前”——新增 `metricsFor55Assignment` / `compare55FinalAssignment` / `best55FinalGroupedAssignment`（在最少批次与 +1 批范围内按新优先级枚举，+1 批需至少提前 2 天的明确收益；极端规模保持贪心降级）。经典 09/22 案例（生产=计划=09-22）：Day14 提前独立放入（09-24 → 10-08），Day10/11/12 @09-28、Day9/13 @09-29、Day3 @10-09；推荐 4 批/总偏移 47 天，备选最少批次 3 批/总偏移 51 天。scheduleBatches、事实字段、36℃、schemaVersion、云同步协议未动。
 - 任务09.1已完成：候选最早放入边界改为**生产日期**而非当前计划——`suggest55ConflictAlternatives` 搜索范围为 [prodDate, currentPlan+maxOffset]（允许合法提前，绝不早于生产日期；未知生产日期保守只后移）；`earliest55DelayCandidate` 更名 `earliest55Candidate`（最早合法候选）；`reasonable55GroupedCandidates` 窗口改为 ±limit；`validate55GroupedSuggestionPlanForApply` 的第二道防线改为“推荐放入早于生产日期即整组拒绝”（相对当前计划提前合法）；历史异常检测删除“adjustedPlanPutin<originalPlanPutin=异常”分支。生产日期提前（如 prod 09-19、计划 09-22）时联合优化可发现 09-20/09-21 等更早合法候选。scheduleBatches、真实事实、已确认节点、36℃、schemaVersion、云同步协议未动。
 - 任务09.2已完成：联合优化复用短周期已选批次——`best55FinalGroupedAssignment` 的输入改为“短周期固定候选 + 长周期候选”合并的完整冲突集（短节点候选列表为单一固定候选），短节点占用的放入日期成为免费批次；`compare55FinalAssignment` 在时间与批次相同后新增“更早的各节点 takeout（升序列表逐项比较）”再比较总延后。prod 09-19 案例：09-20 批次含 Day3/9/10（Day9→09-29、Day10→09-30 不再拖到 10-08），总偏移 23 天；prod 09-22 经典案例结果与任务09完全一致（4 批/47 天）。scheduleBatches、真实事实、已确认节点、36℃、schemaVersion、云同步协议未动。
+- 任务09.3已完成：一键重新优化已调整计划——`build55ReoptimizationSuggestion` 在 clone 中只清除该试验未确认节点的旧 adjustedPlanPutin 后按当前规则重算（旧调整不再阻止新建议；只读 preview）；排程页在“有未确认且带调整节点”时显示【重新优化建议】→ 弹窗对比当前/新建议的批次与完成时间、列出实际变化的 Day →【采用新建议】原子替换（先清所有未确认节点旧调整，再写入新方案；目标节点已确认即整组拒绝；失败回滚一个不改）。新旧方案完全相同时提示“无需调整”，不产生 mutation；已确认/进行中/已完成节点与事实字段绝不进入。scheduleBatches、Task09目标、生产日期边界、36℃、schemaVersion、云同步协议未动。
 
 ## Cloudflare 云同步 PoC：已完成真实后端联调
 

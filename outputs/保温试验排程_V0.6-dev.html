@@ -1341,6 +1341,197 @@ function exp55LegacyAnomaliesHTML(item, targetState){
     +'<button class="mini" data-act="legacyRepairOpen" data-id="'+esc(item.exp.id)+'" data-anoms="'+esc(anomalyListSignature(anomalies))+'">检查并修正</button>'
     +'</div>';
 }
+/* 任务09.3：一键重新优化已调整计划——只读 preview。
+ * 在 clone 中只对该 expId 的未确认节点临时清除 adjustedPlanPutin，
+ * 再用当前生产日期/日历规则/任务09算法重算联合建议；真实 state 完全不动。
+ * 已确认放入/进行中/已完成节点绝不参与，实际事实字段绝不进入。 */
+function build55ReoptimizationSuggestion(targetState, expId){
+  if(!targetState || typeof targetState!=="object") return null;
+  var clone=null;
+  try{ clone=JSON.parse(JSON.stringify(targetState)); }catch(e){ return null; }
+  if(!clone.executions || typeof clone.executions!=="object") clone.executions={};
+  for(var key in clone.executions){
+    if(String(key).indexOf(expId+"|")!==0) continue;
+    var parts=String(key).split("|");
+    if(parts.length!==2) continue;
+    var ex=clone.executions[key];
+    if(ex && ex.putinConfirmed!==true && ex.adjustedPlanPutin){ delete ex.adjustedPlanPutin; }
+  }
+  var plan=build55GroupedConflictSuggestions(computeSchedule(clone).rows, clone, {expId:expId});
+  if(!plan) return null;
+  /* 变化清单：新有效计划（方案内=方案日期，方案外=原计划）与当前有效计划不同的节点 */
+  var currentRows=computeSchedule(targetState).rows, planByDay={};
+  for(var g=0;g<plan.groups.length;g++){
+    for(var d=0;d<plan.groups[g].days.length;d++){
+      planByDay[plan.groups[g].days[d]]=plan.groups[g].putin;
+    }
+  }
+  var changes=[];
+  for(var i=0;i<currentRows.length;i++){
+    var row=currentRows[i];
+    if(row.expId!==expId || row.status!=="未放入") continue;
+    var suggested=planByDay[row.day] || row.originalPlanPutin;
+    var current=row.effectivePlanPutin;
+    if(!suggested || !current) continue;
+    if(current.getTime()!==suggested.getTime()){
+      changes.push({day:row.day,from:new Date(current),to:new Date(suggested)});
+    }
+  }
+  return {plan:plan,changes:changes};
+}
+/* 当前计划摘要（未确认放入节点）：批次数/最终完成/最高 Day 完成。 */
+function current55PlanSummary(targetState, expId){
+  var rows=computeSchedule(targetState).rows, putinTimes={}, takeoutTimes=[], terminalDay=null;
+  for(var i=0;i<rows.length;i++){
+    var row=rows[i];
+    if(row.expId!==expId || row.status!=="未放入") continue;
+    if(row.effectivePlanPutin) putinTimes[row.effectivePlanPutin.getTime()]=true;
+    if(row.effectivePlanTakeout) takeoutTimes.push(row.effectivePlanTakeout.getTime());
+    if(terminalDay==null || row.day>terminalDay) terminalDay=row.day;
+  }
+  var terminalTakeout=null;
+  if(terminalDay!=null){
+    for(var j=0;j<rows.length;j++){
+      var r2=rows[j];
+      if(r2.expId===expId && r2.day===terminalDay && r2.status==="未放入" && r2.effectivePlanTakeout){
+        var tt=r2.effectivePlanTakeout.getTime();
+        if(terminalTakeout==null || tt>terminalTakeout) terminalTakeout=tt;
+      }
+    }
+  }
+  var batchCount=0;
+  for(var k in putinTimes) batchCount++;
+  return {batchCount:batchCount,
+    latestTakeout:takeoutTimes.length?new Date(Math.max.apply(null,takeoutTimes)):null,
+    terminalDay:terminalDay,
+    terminalTakeout:terminalTakeout?new Date(terminalTakeout):null};
+}
+function compare55CurrentAndSuggestedPlan(targetState, expId, suggestion){
+  var current=current55PlanSummary(targetState,expId);
+  var plan=suggestion&&suggestion.plan;
+  return {
+    current:current,
+    suggested:plan?{batchCount:plan.batchCount,latestTakeout:plan.latestTakeout,
+      terminalDay:plan.terminalDay,terminalTakeout:plan.terminalTakeout}:null,
+    changes:suggestion?suggestion.changes:[]
+  };
+}
+/* preview 签名：推荐方案签名 + 将被清除旧调整的节点列表。 */
+function reoptimize55Signature(targetState, expId, plan){
+  if(!plan) return "";
+  var cleared=[];
+  for(var key in targetState.executions){
+    if(String(key).indexOf(expId+"|")!==0) continue;
+    var parts=String(key).split("|");
+    if(parts.length!==2) continue;
+    var ex=targetState.executions[key];
+    if(ex && ex.putinConfirmed!==true && ex.adjustedPlanPutin) cleared.push(parts[1]);
+  }
+  cleared.sort(function(a,b){ return a-b; });
+  return grouped55PlanSignature(plan)+"|"+cleared.join(",");
+}
+/* 任务09.3：原子采用新建议——先清除该试验所有未确认节点的旧调整，再写入新方案；
+ * 已确认放入节点整组拒绝；失败回滚，一个都不改。 */
+function apply55ReoptimizedSuggestion(targetState, expId, suggestion){
+  if(!targetState || typeof targetState!=="object") return {ok:false,error:"状态无效。"};
+  var plan=suggestion&&suggestion.plan;
+  var changes=Array.isArray(suggestion&&suggestion.changes)?suggestion.changes:[];
+  if(!plan || !plan.groups || !plan.groups.length || !changes.length){
+    return {ok:false,error:"当前计划已经是按最新规则计算的推荐方案，无需调整。"};
+  }
+  var planByDay={};
+  for(var g=0;g<plan.groups.length;g++){
+    for(var d=0;d<plan.groups[g].days.length;d++){
+      planByDay[plan.groups[g].days[d]]=plan.groups[g].putin;
+    }
+  }
+  /* 真实执行优先：任何目标/待写节点已确认放入 → 整组拒绝 */
+  for(var c=0;c<changes.length;c++){
+    var exCh=targetState.executions[exKey(expId,changes[c].day)];
+    if(exCh && exCh.putinConfirmed===true) return {ok:false,error:"Day"+changes[c].day+" 已确认放入，整组未采用。"};
+  }
+  for(var keyP in planByDay){
+    var exP=targetState.executions[exKey(expId,keyP)];
+    if(exP && exP.putinConfirmed===true) return {ok:false,error:"Day"+keyP+" 已确认放入，整组未采用。"};
+  }
+  var snapshot=JSON.stringify(targetState.executions);
+  try{
+    /* 1. 清除该试验所有未确认节点的旧调整（新方案不再需要的节点恢复原计划） */
+    for(var key2 in targetState.executions){
+      if(String(key2).indexOf(expId+"|")!==0) continue;
+      var parts2=String(key2).split("|");
+      if(parts2.length!==2) continue;
+      var exC=targetState.executions[key2];
+      if(exC && exC.putinConfirmed!==true && exC.adjustedPlanPutin){
+        delete exC.adjustedPlanPutin;
+        targetState.executions[key2]=exC;
+      }
+    }
+    /* 2. 写入新方案的调整计划 */
+    for(var key3 in planByDay){
+      var exW=exOf(targetState,expId,key3);
+      exW.adjustedPlanPutin=fmtDL(planByDay[key3]);
+      targetState.executions[exKey(expId,key3)]=exW;
+    }
+  }catch(e){
+    targetState.executions=JSON.parse(snapshot);
+    return {ok:false,error:"写入失败，未修改任何计划。"};
+  }
+  return {ok:true,applied:changes.length};
+}
+/* 重新优化确认弹窗：当前 vs 新建议 + 实际会改变的 Day 列表；无变化时仅提示。 */
+function reoptimize55ModalHTML(exp, comparison, sig){
+  function fmtP(summary){
+    if(!summary) return "—";
+    return summary.batchCount+' 个批次'
+      +(summary.latestTakeout?'；最终完成 '+fmtDT(summary.latestTakeout):'')
+      +(summary.terminalDay!=null&&summary.terminalTakeout?'；Day'+summary.terminalDay+' 完成 '+fmtDT(summary.terminalTakeout):'');
+  }
+  var changes=comparison.changes||[];
+  var html='<h3>重新优化当前计划</h3><div class="confirmbox">'
+    +'当前计划：'+esc(fmtP(comparison.current))+'<br>'
+    +'新建议：'+esc(fmtP(comparison.suggested))+'</div>';
+  if(!changes.length){
+    return html+'<div class="confirmbox">当前计划已经是按最新规则计算的推荐方案，无需调整。</div>'
+      +'<div class="m-foot"><button class="ghost" data-act="closeModal">关闭</button></div>';
+  }
+  html+='<div class="confirmbox">将调整：<br>';
+  for(var i=0;i<changes.length;i++){
+    var ch=changes[i];
+    html+='Day'+ch.day+'：'+(ch.from?esc(fmtCompact(ch.from)):'—')+' → '+(ch.to?esc(fmtCompact(ch.to)):'原计划')+'<br>';
+  }
+  return html+'</div>'
+    +'<div class="muted">本次只重新计算尚未确认放入的计划节点。已确认执行记录不会改变。</div>'
+    +'<div class="m-foot">'
+    +'<button data-act="reoptimizeYes" data-id="'+esc(exp.id)+'" data-sig="'+esc(sig)+'">采用新建议</button>'
+    +'<button class="ghost" data-act="closeModal">取消</button></div>';
+}
+/* 任务09.3：55℃排程区块的重新优化入口——存在未确认且带调整计划的节点时显示。 */
+function exp55ReoptimizeHTML(item, targetState){
+  if(!item || item.kind!=="ok" || !item.exp || item.exp.condition==="36±1℃") return "";
+  var waiting=0, hasAdj=false;
+  for(var i=0;i<item.rows.length;i++){
+    var row=item.rows[i];
+    if(row.status==="未放入") waiting++;
+    if(row.status==="未放入" && row.adjusted) hasAdj=true;
+  }
+  if(!waiting || !hasAdj) return "";
+  return '<div class="operation-date-note" style="display:block;margin:6px 0">'
+    +'<button class="mini" data-act="reoptimizeOpen" data-id="'+esc(item.exp.id)+'">重新优化建议</button>'
+    +'</div>';
+}
+/* 任务09.3：plan/modal 共用触发入口——只生成 preview，绝不立即修改 state。 */
+function open55ReoptimizeFromTrigger(t){
+  var id=t.getAttribute("data-id");
+  if(!id) return;
+  var exp=findExp(id);
+  if(!exp) return;
+  var suggestion=build55ReoptimizationSuggestion(state,exp.id);
+  if(!suggestion){ showToast("当前没有可重新计算的建议。", true); return; }
+  var comparison=compare55CurrentAndSuggestedPlan(state,exp.id,suggestion);
+  var sig=reoptimize55Signature(state,exp.id,suggestion.plan);
+  openModal(reoptimize55ModalHTML(exp,comparison,sig));
+}
 /* 任务08.4重做：plan/modal 共用触发入口——按当前 state 重检测，列表签名变化即拒绝。 */
 function open55LegacyRepairFromTrigger(t){
   var id=t.getAttribute("data-id");
@@ -3509,6 +3700,19 @@ function onModalClick(ev){
     else showToast("Day"+resultL.day+" 已恢复原计划，可用当前规则重新调整 ✓");
     return;
   }
+  if(act==="reoptimizeYes"){
+    /* 任务09.3：确认采用前按当前 state 重算 preview，签名过期即拒绝 */
+    var suggestionYes=build55ReoptimizationSuggestion(state,exp.id);
+    var sigYes=t.getAttribute("data-sig")||"";
+    if(!suggestionYes || reoptimize55Signature(state,exp.id,suggestionYes.plan)!==sigYes){
+      showToast("计划或规则已变化，请重新查看建议。", true); return;
+    }
+    var resultRe=apply55ReoptimizedSuggestion(state,exp.id,suggestionYes);
+    if(!resultRe.ok){ showToast(resultRe.error, true); return; }
+    saveState(); closeModal(); renderCurrent();
+    showToast("已按新建议重新优化 "+resultRe.applied+" 个节点 ✓");
+    return;
+  }
   if(day!==null && act==="nodeSave"){
     /* 保存编辑当前节点（V0.5.4）：实际放入/预计取出/执行人/备注一次性保存；
      * 标准目标 = 新实际放入 + Day×24h 自动重算；预计取出仍跟随旧标准目标 → 视为未人工调整
@@ -3868,6 +4072,8 @@ function planHTML(sch, st){
       html += exp55ConflictSummaryHTML(it, st);
       /* 任务08.4重做：试验级历史计划异常摘要（仅检测到明确逻辑异常时显示） */
       html += exp55LegacyAnomaliesHTML(it, st);
+      /* 任务09.3：一键重新优化已调整计划（存在未确认且带调整的节点时显示） */
+      html += exp55ReoptimizeHTML(it, st);
       /* 批次摘要（V0.5.4：标题“待放入批次”，只列仍未放入的节点）：一行一个批次 */
       if(it.batches.length){
         html += '<div class="batlines"><div class="batch-title">待放入批次</div>';
@@ -4049,6 +4255,8 @@ function onPlanClick(ev){
   if(act==="groupedApplyOpen"){ open55GroupedApplyFromTrigger(t); return; }
   /* 任务08.4重做：【检查并修正】在 planBody 渲染，须在本 handler（而非仅 onModalClick）处理 */
   if(act==="legacyRepairOpen"){ open55LegacyRepairFromTrigger(t); return; }
+  /* 任务09.3：【重新优化建议】在 planBody 渲染，只打开 preview 弹窗 */
+  if(act==="reoptimizeOpen"){ open55ReoptimizeFromTrigger(t); return; }
   if(day===null) return;
   if(act==="adjustPlan"){
     var sch = computeSchedule({opTime:state.opTime, experiments:[exp], executions:state.executions});
