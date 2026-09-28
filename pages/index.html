@@ -5479,44 +5479,50 @@ function runSelfTests(){
            "T112 Day5 回测：已确认放入 → 主值=实际 09-22 16:00（原计划 09-24 不占主值），预计取出=09-27 16:00",
            ok112 ? "主值正确" : "未找到行或主值错误");
 
-        /* T113 Day3 回测（用户用例十五）：编辑当前节点弹窗反复修改预计取出，操作日程自动迁移，进行中无实际偏差 */
+        /* T113 Day3 回测（用户用例十五）：编辑当前节点弹窗反复修改预计取出，操作日程自动迁移，进行中无实际偏差。
+         * 日期相对“今天”生成（实际放入=昨天 10:00，标准目标=放入+3×24h，两次调整均在未来），
+         * 避免硬编码日期随时间过期后落入“逾期未处理”区（逾期区在任何日期页都会显示）导致断言失效。 */
         var st113 = setup();
         st113.experiments[0].id = "EX113";
+        var put113 = addDays(new Date(), -1); put113.setHours(10,0,0,0);    /* 实际放入：昨天 10:00 */
+        var tgt113 = addDays(put113, 3);                                     /* 标准目标：放入+3×24h */
+        var exp1_113 = addDays(tgt113, 0); exp1_113.setHours(tgt113.getHours()+2, tgt113.getMinutes(),0,0);  /* 第一次调整：标准+2h */
+        var exp2_113 = addDays(tgt113, 1); exp2_113.setHours(9,0,0,0);       /* 第二次调整：次日 09:00 */
         st113.executions[exKey("EX113",3)] = {putinConfirmed:true, completeConfirmed:false,
-          putinTime:"2026-09-24T16:00", takeoutTime:"", adjustedExpectedTakeout:"",
+          putinTime:fmtDL(put113), takeoutTime:"", adjustedExpectedTakeout:"",
           qty:"", person:"", note:""};
         state = st113;
         renderPlan();
         var b113 = document.querySelector('#planBody [data-act="nodeEdit"][data-day="3"]');
         if(b113) b113.click();
         var inp113 = document.querySelector('#modalBox [data-act="nodeField"][data-field="expectedTakeout"]');
-        if(inp113){ inp113.value = "2026-09-27T18:00"; inp113.dispatchEvent(new Event("input", {bubbles:true})); }
+        if(inp113){ inp113.value = fmtDL(exp1_113); inp113.dispatchEvent(new Event("input", {bubbles:true})); }
         var save113 = document.querySelector('#modalBox [data-act="nodeSave"]');
         if(save113) save113.click();
         renderPlan();
         var row3_113a = document.querySelector('#planBody tr.dayrow[data-day="3"]');
-        var ok113a = !!row3_113a && row3_113a.textContent.indexOf("09-27 18:00")>=0
+        var ok113a = !!row3_113a && row3_113a.textContent.indexOf(fmtCompact(exp1_113))>=0
           && row3_113a.textContent.indexOf("已调")>=0 && row3_113a.textContent.indexOf("偏差")<0;
         var b113b = document.querySelector('#planBody [data-act="nodeEdit"][data-day="3"]');
         var ok113b = !!b113b;                     /* 第一次修改后仍可点击 */
         if(b113b) b113b.click();
         var inp113b = document.querySelector('#modalBox [data-act="nodeField"][data-field="expectedTakeout"]');
-        var ok113c = !!inp113b && inp113b.value==="2026-09-27T18:00";   /* 默认显示当前调整值 */
-        if(inp113b){ inp113b.value = "2026-09-28T09:00"; inp113b.dispatchEvent(new Event("input", {bubbles:true})); }
+        var ok113c = !!inp113b && inp113b.value===fmtDL(exp1_113);   /* 默认显示当前调整值 */
+        if(inp113b){ inp113b.value = fmtDL(exp2_113); inp113b.dispatchEvent(new Event("input", {bubbles:true})); }
         var save113b = document.querySelector('#modalBox [data-act="nodeSave"]');
         if(save113b) save113b.click();
         renderPlan();
         var row3_113b = document.querySelector('#planBody tr.dayrow[data-day="3"]');
-        var ok113d = !!row3_113b && row3_113b.textContent.indexOf("09-28 09:00")>=0;
-        document.getElementById("todayDate").value = "2026-09-27";
+        var ok113d = !!row3_113b && row3_113b.textContent.indexOf(fmtCompact(exp2_113))>=0;
+        document.getElementById("todayDate").value = ymdOf(tgt113);
         renderToday();
-        var on27_113 = document.querySelector('#todayBody tr[data-day="3"]') !== null;
-        document.getElementById("todayDate").value = "2026-09-28";
+        var onA_113 = document.querySelector('#todayBody tr[data-day="3"]') !== null;
+        document.getElementById("todayDate").value = ymdOf(exp2_113);
         renderToday();
-        var on28_113 = document.querySelector('#todayBody tr[data-day="3"]') !== null;
-        var ok113e = !on27_113 && on28_113;      /* 任务自动迁移到新日期 */
+        var onB_113 = document.querySelector('#todayBody tr[data-day="3"]') !== null;
+        var ok113e = !onA_113 && onB_113;      /* 任务自动迁移到新日期 */
         ok(ok113a && ok113b && ok113c && ok113d && ok113e,
-           "T113 Day3 回测：编辑当前节点弹窗反复修改（18:00→09-28 09:00），日程自动迁移，进行中无实际偏差",
+           "T113 Day3 回测：编辑当前节点弹窗反复修改（标准+2h→次日 09:00），日程自动迁移，进行中无实际偏差",
            "首次="+ok113a+"，再次可点="+ok113b+"，默认值="+ok113c+"，二次保存="+ok113d+"，迁移="+ok113e);
 
         /* T114 完成后才计算真实偏差，且小时单位只拼接一次（修复 +1.6hh） */
