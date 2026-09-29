@@ -476,8 +476,10 @@ function prodDateInfoOf(targetState, expId){
 }
 /* 55℃冲突候选：只平移整组“放入 + 取出”，始终保持取出=放入+Day×24h。
  * 任务09.1 硬约束：候选放入不得早于生产日期（exp.prodDate）；相对当前有效计划
- * 提前是合法的。向后最多搜索 maxOffsetDays 天；未知生产日期时保守地只后移。
- * 结果仅供查看，不写入 execution 或排程字段。 */
+ * 提前是合法的。任务10.3 硬约束：候选放入不得早于当前时间（datetime 比较，
+ * 可注入 options.nowMs 以便测试固定时间；生产环境默认全局 nowMs()）。
+ * 实际最早边界 = max(生产日期, 当前时间)。向后最多搜索 maxOffsetDays 天；
+ * 未知生产日期时保守地只后移。结果仅供查看，不写入 execution 或排程字段。 */
 function suggest55ConflictAlternatives(row, targetState, options){
   var opts=options&&typeof options==="object"?options:{};
   var provider=opts.provider&&typeof opts.provider.loadYear==="function"
@@ -488,6 +490,8 @@ function suggest55ConflictAlternatives(row, targetState, options){
   var maxOffset=+opts.maxOffsetDays;
   if(!isFinite(maxOffset) || maxOffset<1) maxOffset=31;
   maxOffset=Math.floor(maxOffset);
+  var nowBound=opts.nowMs!=null?+opts.nowMs:nowMs();
+  if(!isFinite(nowBound)) nowBound=nowMs();
   var originalPutin=new Date(sourcePutin), out=[];
   /* 最早边界：优先 options 显式传入，其次按 expId 从 state 解析生产日期 */
   var earliest=null;
@@ -503,7 +507,8 @@ function suggest55ConflictAlternatives(row, targetState, options){
   }
   for(var offset=minOffset;offset<=maxOffset;offset++){
     var putin=addDays(originalPutin,offset), takeout=addDays(putin,day);
-    if(prodKey && ymdOf(putin)<prodKey) continue;   /* 防御：绝不早于生产日期 */
+    if(putin.getTime()<nowBound) continue;            /* 任务10.3：不推荐已过去的时间 */
+    if(prodKey && ymdOf(putin)<prodKey) continue;     /* 防御：绝不早于生产日期 */
     var putinStatus=operationDateStatus(putin,targetState,provider);
     var takeoutStatus=operationDateStatus(takeout,targetState,provider);
     if(!putinStatus.available || !takeoutStatus.available) continue;
@@ -1117,9 +1122,11 @@ function operation55SuggestionHTML(row, targetState, conflictTime){
 /* 任务08：55℃联合建议人工确认采用。A. validate 只读校验当前 state 下的应用资格（原子：
  * 任一节点不满足则整组拒绝）；B. apply 校验通过后一次性写入 adjustedPlanPutin。
  * 只写计划放入时间；取出继续由 放入+Day×24h 自动推导；绝不写事实字段与确认状态。 */
-function validate55GroupedSuggestionPlanForApply(targetState, expId, plan){
+function validate55GroupedSuggestionPlanForApply(targetState, expId, plan, options){
   if(!targetState || typeof targetState!=="object") return {ok:false,error:"状态无效，无法采用推荐方案。"};
   if(!plan || !Array.isArray(plan.groups) || !plan.groups.length) return {ok:false,error:"当前没有可应用的推荐方案。"};
+  var nowBound=options&&options.nowMs!=null?+options.nowMs:nowMs();
+  if(!isFinite(nowBound)) nowBound=nowMs();
   var rows=computeSchedule(targetState).rows, changes=[], seen={};
   for(var g=0;g<plan.groups.length;g++){
     var group=plan.groups[g];
@@ -1142,6 +1149,10 @@ function validate55GroupedSuggestionPlanForApply(targetState, expId, plan){
       var prodApply=prodDateInfoOf(targetState,expId);
       if(prodApply && ymdOf(group.putin)<prodApply.key){
         return {ok:false,error:"Day"+day+" 推荐放入早于生产日期，整组未采用。"};
+      }
+      /* 任务10.3 第二道防线：弹窗停留期间候选时间已过去也必须拒绝采用 */
+      if(group.putin.getTime()<nowBound){
+        return {ok:false,error:"Day"+day+" 推荐放入时间已经过去，请重新查看调整建议。"};
       }
       var putinStatus=operationDateStatus(group.putin,targetState);
       var takeoutStatus=operationDateStatus(takeout,targetState);
@@ -1345,8 +1356,9 @@ function exp55LegacyAnomaliesHTML(item, targetState){
  * 在 clone 中只对该 expId 的未确认节点临时清除 adjustedPlanPutin，
  * 再用当前生产日期/日历规则/任务09算法重算联合建议；真实 state 完全不动。
  * 已确认放入/进行中/已完成节点绝不参与，实际事实字段绝不进入。 */
-function build55ReoptimizationSuggestion(targetState, expId){
+function build55ReoptimizationSuggestion(targetState, expId, options){
   if(!targetState || typeof targetState!=="object") return null;
+  var opts=options&&typeof options==="object"?options:{};
   var clone=null;
   try{ clone=JSON.parse(JSON.stringify(targetState)); }catch(e){ return null; }
   if(!clone.executions || typeof clone.executions!=="object") clone.executions={};
@@ -1357,7 +1369,8 @@ function build55ReoptimizationSuggestion(targetState, expId){
     var ex=clone.executions[key];
     if(ex && ex.putinConfirmed!==true && ex.adjustedPlanPutin){ delete ex.adjustedPlanPutin; }
   }
-  var plan=build55GroupedConflictSuggestions(computeSchedule(clone).rows, clone, {expId:expId});
+  /* 任务10.3：nowMs 透传给联合建议，重新优化同样不推荐已过去的时间 */
+  var plan=build55GroupedConflictSuggestions(computeSchedule(clone).rows, clone, {expId:expId, nowMs:opts.nowMs});
   if(!plan) return null;
   /* 变化清单：新有效计划（方案内=方案日期，方案外=原计划）与当前有效计划不同的节点 */
   var currentRows=computeSchedule(targetState).rows, planByDay={};
@@ -1462,16 +1475,22 @@ function reoptimize55Signature(targetState, expId, plan){
 }
 /* 任务09.3：原子采用新建议——先清除该试验所有未确认节点的旧调整，再写入新方案；
  * 已确认放入节点整组拒绝；失败回滚，一个都不改。 */
-function apply55ReoptimizedSuggestion(targetState, expId, suggestion){
+function apply55ReoptimizedSuggestion(targetState, expId, suggestion, options){
   if(!targetState || typeof targetState!=="object") return {ok:false,error:"状态无效。"};
   var plan=suggestion&&suggestion.plan;
   var changes=Array.isArray(suggestion&&suggestion.changes)?suggestion.changes:[];
   if(!plan || !plan.groups || !plan.groups.length || !changes.length){
     return {ok:false,error:"当前计划已经是按最新规则计算的推荐方案，无需调整。"};
   }
+  var nowBound=options&&options.nowMs!=null?+options.nowMs:nowMs();
+  if(!isFinite(nowBound)) nowBound=nowMs();
   var planByDay={};
   for(var g=0;g<plan.groups.length;g++){
     for(var d=0;d<plan.groups[g].days.length;d++){
+      /* 任务10.3：重新优化确认采用时同样拒绝已过去的候选时间 */
+      if(plan.groups[g].putin.getTime()<nowBound){
+        return {ok:false,error:"Day"+plan.groups[g].days[d]+" 推荐放入时间已经过去，请重新查看调整建议。"};
+      }
       planByDay[plan.groups[g].days[d]]=plan.groups[g].putin;
     }
   }

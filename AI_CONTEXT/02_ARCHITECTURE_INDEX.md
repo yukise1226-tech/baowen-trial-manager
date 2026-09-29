@@ -21,7 +21,7 @@
 | `openAdjust36Plan` / `refreshAdjust36Preview` | 36℃单点计划调整 | `adjust36Save`、`restore36Plan` |
 | `today36Row` / `task36TableHTML` | 36℃操作日程展示 | `36℃｜`、`task36Confirm` |
 | `operationDateStatus` / `operationDateStatusHTML` | 按计划操作时间返回日期可用性与官方日历覆盖状态，并生成只读冲突提示 | `custom-skip`、`calendar-unavailable`、`operation-date-note` |
-| `suggest55ConflictAlternatives` / `build55ConflictSummary` | 为 55℃节点生成保持 Day×24h 的候选（时间边界=生产日期，允许相对当前计划提前），并汇总冲突与日历覆盖状态 | `offsetDays`、`holidayCoverageStatus`、`operation55SuggestionHTML` |
+| `suggest55ConflictAlternatives` / `build55ConflictSummary` | 为 55℃节点生成保持 Day×24h 的候选（时间边界=max(生产日期,当前时间)，允许相对当前计划提前），并汇总冲突与日历覆盖状态 | `offsetDays`、`nowMs`、`holidayCoverageStatus`、`operation55SuggestionHTML` |
 | `build55GroupedConflictSuggestions` / `operation55GroupedPlanHTML` | 为同一 55℃试验的未确认冲突节点生成只后移、最终完成时间优先的只读联合建议 | `delay-grouped`、`minimum-batch`、`operation-suggestion-joint` |
 | `metricsFor55Assignment` / `best55FinalGroupedAssignment` | 联合方案评价（latestTakeout/terminalTakeout 优先）与 +1 批次内最优枚举；短周期固定候选并入同一优化器以复用批次 | `EARLIER_COMPLETION_MIN_DAYS`、`预计最终完成`、`takeoutTimes` |
 | `validate55GroupedSuggestionPlanForApply` / `apply55GroupedSuggestionPlan` / `apply55GroupedPlanConfirmHTML` | 联合建议人工确认采用：原子校验+一次性写入 adjustedPlanPutin，确认弹窗分组展示 | `groupedApplyOpen`、`groupedApplyYes`、`采用推荐方案` |

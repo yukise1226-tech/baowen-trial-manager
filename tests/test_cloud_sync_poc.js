@@ -21,8 +21,16 @@ function memoryStorage() {
 
 const localStorage = memoryStorage();
 const sessionStorage = memoryStorage();
+/* 固定“当前时间”（早于所有测试夹具日期），使建议不因真实日期变化而排除过去候选 */
+const FIXED_TEST_NOW = Date.parse('2026-09-01T00:00:00+08:00');
+class FixedDate extends Date {
+  constructor(...args){ if(args.length===0) super(FIXED_TEST_NOW); else super(...args); }
+  static now(){ return FIXED_TEST_NOW; }
+  static parse(value){ return Date.parse(value); }
+  static UTC(...args){ return Date.UTC(...args); }
+}
 const app = vm.createContext({
-  console, Date, performance, crypto: webcrypto, URL,
+  console, Date: FixedDate, performance, crypto: webcrypto, URL,
   Promise, setTimeout, clearTimeout, localStorage, sessionStorage
 });
 vm.runInContext(match[1], app, {filename: htmlPath});
