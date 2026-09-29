@@ -1,5 +1,15 @@
 # 版本记录
 
+## V0.6.0 Stable
+
+- 正式发布（2026-09-28）：包含 Cloud Sync V1.1（手动同步，Worker + SQLite-backed Durable Object 服务端 CAS）；
+  55℃ 稳定逻辑保持不变；36℃ 冻结不继续优化；`schemaVersion: 6` 不变。
+- 正式生产部署到 Cloudflare Pages：`https://baowen-tool.pages.dev`（部署自 main，deployment `5c447bf7`）；
+  桌面生产 smoke 通过，手机实机 smoke 通过（用户实测）。
+- 最终自动化回归：HTML 内置 147/147、Cloud Sync V1.1 专项 10/10、同步 PoC 12/12、
+  36℃ 单插入 9/9、Worker 单测+集成 20/20。
+- 仍为手动同步；不做自动双向同步、多用户、D1、Dashboard。
+
 ## 手动云同步 PoC（真实 Cloudflare 联调完成，未升稳定版）
 
 - 后端：Cloudflare Worker + SQLite-backed Durable Object（`cloud-sync-worker/`），
