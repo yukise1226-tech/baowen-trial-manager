@@ -19,7 +19,7 @@
   36℃ 单插入 9/9；Worker 单测+集成 20/20。
 - **仍不做**：自动双向同步、多人协作、D1、Dashboard、通知、正式账号体系；同步模式保持手动上传/拉取。
 
-## V0.7 统一日期规则：任务01～09.3.1已完成
+## V0.7 统一日期规则：任务01～10.3已完成
 
 - 已有 `customSkipDates`、`holidayDates`、`workdayOverrides`、2026 中国官方节假日 provider 与 `isOperationDateAvailable()`。
 - `operationDateStatus()` 已按计划操作时间返回 `available`、`reason`、`date` 及官方日历覆盖状态；`customSkipDates` 优先级最高，调休上班日覆盖普通周末。
@@ -36,6 +36,7 @@
 - 任务09.2已完成：联合优化复用短周期已选批次——`best55FinalGroupedAssignment` 的输入改为“短周期固定候选 + 长周期候选”合并的完整冲突集（短节点候选列表为单一固定候选），短节点占用的放入日期成为免费批次；`compare55FinalAssignment` 在时间与批次相同后新增“更早的各节点 takeout（升序列表逐项比较）”再比较总延后。prod 09-19 案例：09-20 批次含 Day3/9/10（Day9→09-29、Day10→09-30 不再拖到 10-08），总偏移 23 天；prod 09-22 经典案例结果与任务09完全一致（4 批/47 天）。scheduleBatches、真实事实、已确认节点、36℃、schemaVersion、云同步协议未动。
 - 任务09.3已完成：一键重新优化已调整计划——`build55ReoptimizationSuggestion` 在 clone 中只清除该试验未确认节点的旧 adjustedPlanPutin 后按当前规则重算（旧调整不再阻止新建议；只读 preview）；排程页在“有未确认且带调整节点”时显示【重新优化建议】→ 弹窗对比当前/新建议的批次与完成时间、列出实际变化的 Day →【采用新建议】原子替换（先清所有未确认节点旧调整，再写入新方案；目标节点已确认即整组拒绝；失败回滚一个不改）。新旧方案完全相同时提示“无需调整”，不产生 mutation；已确认/进行中/已完成节点与事实字段绝不进入。scheduleBatches、Task09目标、生产日期边界、36℃、schemaVersion、云同步协议未动。
 - 任务09.3.1已完成：重新优化预览比较口径修正——新增 `project55PlanSummaryAfterSuggestion`（在 clone 上清除未确认旧调整、写入 suggestion.plan 后按完整试验排程统计批次数/最晚取出/最高 Day 完成），`compare55CurrentAndSuggestedPlan` 的 suggested 改为该同口径投影摘要（不再直接用 suggestion.plan 的冲突节点子集指标）。09-19 案例弹窗正确显示 5批 → 5批（同时 Day3/9/10 明显提前）。
+- 任务10.3已完成：55℃优化建议不得推荐已过去的放入时间——`suggest55ConflictAlternatives` 新增当前时间约束（datetime 比较，可注入 `options.nowMs`，生产默认全局 `nowMs()`），实际最早边界 = max(生产日期, 当前时间)；联合建议/重新优化（`build55ReoptimizationSuggestion` 透传 nowMs）自动继承同一规则；`validate55GroupedSuggestionPlanForApply` 与 `apply55ReoptimizedSuggestion` 新增第二道防线（候选已过去即拒绝："DayX 推荐放入时间已经过去，请重新查看调整建议。"）。19 个既有专项套件改用固定时间 Date 子类注入（不再依赖真实日期），并新增 `tests/test_55c_past_times.js`（PAST-01～12）。
 
 ## Cloudflare 云同步 PoC：已完成真实后端联调
 

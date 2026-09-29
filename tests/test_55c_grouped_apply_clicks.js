@@ -31,7 +31,15 @@ const document = { getElementById: el, querySelector() { return null; }, createE
 
 /* 脚本末尾的 boot 在 document 未定义时跳过 init（与现有测试一致）；
  * 加载后再注入 document stub，供 openModal/showToast 等调用时使用。 */
-const app = vm.createContext({console, Date, performance, localStorage, setTimeout, clearTimeout});
+/* 固定“当前时间”（早于所有测试夹具日期），使建议不因真实日期变化而排除过去候选 */
+const FIXED_TEST_NOW = Date.parse('2026-09-01T00:00:00+08:00');
+class FixedDate extends Date {
+  constructor(...args){ if(args.length===0) super(FIXED_TEST_NOW); else super(...args); }
+  static now(){ return FIXED_TEST_NOW; }
+  static parse(value){ return Date.parse(value); }
+  static UTC(...args){ return Date.UTC(...args); }
+}
+const app = vm.createContext({console, Date: FixedDate, performance, localStorage, setTimeout, clearTimeout});
 vm.runInContext(match[1], app, {filename: htmlPath});
 app.document = document;
 
