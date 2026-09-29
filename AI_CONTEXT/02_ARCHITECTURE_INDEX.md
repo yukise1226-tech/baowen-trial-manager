@@ -20,6 +20,16 @@
 | `task36RowHTML` / `plan36SectionHTML` | 36℃排程结果 | `计划操作时间`、`标准节点` |
 | `openAdjust36Plan` / `refreshAdjust36Preview` | 36℃单点计划调整 | `adjust36Save`、`restore36Plan` |
 | `today36Row` / `task36TableHTML` | 36℃操作日程展示 | `36℃｜`、`task36Confirm` |
+| `operationDateStatus` / `operationDateStatusHTML` | 按计划操作时间返回日期可用性与官方日历覆盖状态，并生成只读冲突提示 | `custom-skip`、`calendar-unavailable`、`operation-date-note` |
+| `suggest55ConflictAlternatives` / `build55ConflictSummary` | 为 55℃节点生成保持 Day×24h 的候选（时间边界=生产日期，允许相对当前计划提前），并汇总冲突与日历覆盖状态 | `offsetDays`、`holidayCoverageStatus`、`operation55SuggestionHTML` |
+| `build55GroupedConflictSuggestions` / `operation55GroupedPlanHTML` | 为同一 55℃试验的未确认冲突节点生成只后移、最终完成时间优先的只读联合建议 | `delay-grouped`、`minimum-batch`、`operation-suggestion-joint` |
+| `metricsFor55Assignment` / `best55FinalGroupedAssignment` | 联合方案评价（latestTakeout/terminalTakeout 优先）与 +1 批次内最优枚举；短周期固定候选并入同一优化器以复用批次 | `EARLIER_COMPLETION_MIN_DAYS`、`预计最终完成`、`takeoutTimes` |
+| `validate55GroupedSuggestionPlanForApply` / `apply55GroupedSuggestionPlan` / `apply55GroupedPlanConfirmHTML` | 联合建议人工确认采用：原子校验+一次性写入 adjustedPlanPutin，确认弹窗分组展示 | `groupedApplyOpen`、`groupedApplyYes`、`采用推荐方案` |
+| `exp55ConflictSummaryHTML` | 55℃试验级冲突摘要（数量+Day列表+联合调整建议入口），复用联合建议与采用流程 | `不可操作日冲突`、`查看联合调整建议` |
+| `open55GroupedApplyFromTrigger` | 排程页/操作日程/弹窗共用的“采用推荐方案”触发入口（重算→签名校验→校验→确认弹窗） | `groupedApplyOpen`、`groupedApplyYes` |
+| `build55ReoptimizationSuggestion` / `apply55ReoptimizedSuggestion` / `exp55ReoptimizeHTML` | 一键重新优化已调整计划：clone 重算 preview、对比展示、原子替换旧调整 | `reoptimizeOpen`、`reoptimizeYes`、`重新优化建议` |
+| `project55PlanSummaryAfterSuggestion` / `compare55CurrentAndSuggestedPlan` | 把新建议投射到完整排程后的同口径摘要（当前 vs 采用后对比） | `当前计划`、`新建议` |
+| `collect55LegacyPlanAnomalies` / `apply55LegacyRepairFix` / `exp55LegacyAnomaliesHTML` | 55℃历史计划异常检测与针对性修正（只按业务不变量判断，不猜版本） | `legacyRepairOpen`、`legacyRepairPlanFix`、`legacyRepairHardFix`、`检查并修正` |
 | `onTodayInput` / `onTodayChange` / `onTodayClick` | 实际字段、确认与撤销事件 | `task36Text`、`task36Time`、`task36Undo` |
 | `buildCsvTexts` 的 `plan36`、`rows36` 分支 | 36℃排程/操作 CSV；与55℃分支共存 | `plan36`、`rows36` |
 | `migrate36PhysicalActionModel` / `migrateV06` | 旧记录合并、schema 5→6 | `legacy-micro-day`、`migrateV06` |

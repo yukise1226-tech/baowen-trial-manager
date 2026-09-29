@@ -62,6 +62,20 @@ td .cellwrap{min-width:96px;}
 .st-doing{color:var(--amber);font-weight:600;}
 .st-pending{color:var(--muted);}
 .st-skip{color:var(--muted);font-style:italic;}
+.operation-date-note{display:block;margin-top:3px;font-size:11.5px;line-height:1.35;white-space:normal;font-weight:600;}
+.operation-date-note.conflict{color:var(--red);}
+.operation-date-note.coverage{color:var(--amber);}
+.operation-suggestion{margin-top:4px;font-size:11.5px;line-height:1.45;white-space:normal;color:var(--ink);}
+.operation-suggestion summary{color:var(--blue);cursor:pointer;font-weight:600;user-select:none;}
+.operation-suggestion-box{min-width:300px;max-width:430px;margin-top:4px;padding:7px 9px;
+  border:1px solid #c9d8ee;border-radius:6px;background:var(--blue-bg);}
+.operation-suggestion-box ul{margin:5px 0 0;padding-left:18px;}
+.operation-suggestion-box li{margin:2px 0;}
+.operation-suggestion-warning{color:var(--amber);font-weight:600;margin-top:4px;}
+.operation-suggestion-joint{margin-top:7px;padding-top:7px;border-top:1px dashed var(--line);}
+.operation-suggestion-joint-title{color:var(--green);font-weight:700;}
+.operation-suggestion-joint-group{margin-top:5px;padding:5px 7px;border-radius:6px;background:#f7fbff;}
+.operation-suggestion-joint-alt{margin-top:6px;}
 .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;}
 .badge.ok{background:var(--green-bg);color:var(--green);}
 .badge.draft{background:var(--amber-bg);color:var(--amber);}
@@ -195,6 +209,7 @@ table.planmain tbody tr:not(.row-done):hover{background:#eef4fc;}
       <button class="ghost mini" id="btnExport">导出数据JSON</button>
       <button class="ghost mini" id="btnImport">导入数据JSON</button>
       <input type="file" id="importFile" accept=".json,application/json" style="display:none">
+      <button class="ghost mini" id="btnDateRules">日期规则</button>
       <button class="ghost mini" id="btnSyncSettings">同步设置</button>
       <button class="ghost mini" id="btnSyncUpload">上传到云端</button>
       <button class="ghost mini" id="btnSyncDownload">从云端拉取</button>
@@ -399,11 +414,1183 @@ function isWeekend(dt){ var w=dt.getDay(); return w===0||w===6; }
 function weekdayName(dt){ return ["周日","周一","周二","周三","周四","周五","周六"][dt.getDay()]; }
 function firstWorkdayAtOrAfter(dt){ var d=new Date(dt); while(isWeekend(d)) d=addDays(d,1); return d; }
 function ymdOf(dt){ return formatYMD(dt.getFullYear(), dt.getMonth()+1, dt.getDate()); }
+
+/* V0.7 日期可操作性纯规则层；法定节假日由可替换 provider 注入，本层不联网。 */
+function operationDateSetHas(dateSet, dateKey){
+  if(!dateSet) return false;
+  if(typeof dateSet.has==="function") return dateSet.has(dateKey);
+  return Array.isArray(dateSet) && dateSet.indexOf(dateKey)>=0;
+}
+function isOperationDateAvailable(dt, rules){
+  if(!(dt instanceof Date) || isNaN(dt.getTime())) return false;
+  var opts=rules||{}, dateKey=ymdOf(dt);
+  if(operationDateSetHas(opts.customSkipDates,dateKey)) return false;
+  if(operationDateSetHas(opts.workdayOverrides,dateKey)) return true;
+  if(operationDateSetHas(opts.holidayDates,dateKey)) return false;
+  return !isWeekend(dt);
+}
+/* 计划操作日只读状态：识别冲突与官方日历覆盖情况，不改写任何排程时间。 */
+function operationDateStatus(dt, targetState, provider){
+  if(!(dt instanceof Date) || isNaN(dt.getTime())){
+    return {available:false,reason:"invalid-date",date:"",holidayCalendar:{
+      year:null,available:false,status:"unavailable",source:"",version:"",sourceUrl:""
+    }};
+  }
+  var dateKey=ymdOf(dt), calendar=loadHolidayCalendar(
+    provider&&typeof provider.loadYear==="function"?provider:chinaHolidayCalendarProvider,
+    dt.getFullYear());
+  var rules=operationDateRulesForState(targetState,calendar), available=true, reason="available";
+  if(operationDateSetHas(rules.customSkipDates,dateKey)){
+    available=false; reason="custom-skip";
+  }else if(operationDateSetHas(rules.workdayOverrides,dateKey)){
+    available=true; reason="available";
+  }else if(operationDateSetHas(rules.holidayDates,dateKey)){
+    available=false; reason="holiday";
+  }else if(isWeekend(dt)){
+    available=false; reason="weekend";
+  }else if(!calendar.available){
+    /* 未收录年份不猜测节假日，仅标记覆盖缺失；普通工作日仍可操作。 */
+    available=true; reason="calendar-unavailable";
+  }
+  return {available:available,reason:reason,date:dateKey,holidayCalendar:{
+    year:calendar.year,available:calendar.available,status:calendar.status,
+    source:calendar.source,version:calendar.version,sourceUrl:calendar.sourceUrl
+  }};
+}
+/* 任务09.1：候选时间边界 = 生产日期（样品最早可进入保温的日期）。
+ * 返回 {date, key}；试验缺失或生产日期无效返回 null。 */
+function prodDateInfoOf(targetState, expId){
+  if(!targetState || !Array.isArray(targetState.experiments)) return null;
+  for(var i=0;i<targetState.experiments.length;i++){
+    var exp=targetState.experiments[i];
+    if(exp.id===expId && exp.prodDate){
+      var parsed=parseDateInput(exp.prodDate);
+      if(parsed){
+        return {y:parsed.y,m:parsed.m,d:parsed.d,
+          key:formatYMD(parsed.y,parsed.m,parsed.d),
+          date:new Date(parsed.y,parsed.m-1,parsed.d)};
+      }
+    }
+  }
+  return null;
+}
+/* 55℃冲突候选：只平移整组“放入 + 取出”，始终保持取出=放入+Day×24h。
+ * 任务09.1 硬约束：候选放入不得早于生产日期（exp.prodDate）；相对当前有效计划
+ * 提前是合法的。向后最多搜索 maxOffsetDays 天；未知生产日期时保守地只后移。
+ * 结果仅供查看，不写入 execution 或排程字段。 */
+function suggest55ConflictAlternatives(row, targetState, options){
+  var opts=options&&typeof options==="object"?options:{};
+  var provider=opts.provider&&typeof opts.provider.loadYear==="function"
+    ? opts.provider : chinaHolidayCalendarProvider;
+  var day=+(row&&row.day), sourcePutin=row&&(row.effectivePlanPutin||row.putinActual||row.originalPlanPutin);
+  if(!(sourcePutin instanceof Date) || isNaN(sourcePutin.getTime()) || !isFinite(day) || day<0) return [];
+  day=Math.floor(day);
+  var maxOffset=+opts.maxOffsetDays;
+  if(!isFinite(maxOffset) || maxOffset<1) maxOffset=31;
+  maxOffset=Math.floor(maxOffset);
+  var originalPutin=new Date(sourcePutin), out=[];
+  /* 最早边界：优先 options 显式传入，其次按 expId 从 state 解析生产日期 */
+  var earliest=null;
+  if(opts.earliestPutinDate instanceof Date && !isNaN(opts.earliestPutinDate.getTime())) earliest=opts.earliestPutinDate;
+  else if(opts.earliestPutinDate){ var ep=parseDateTime(String(opts.earliestPutinDate)); if(ep) earliest=ep; }
+  if(!earliest){ var prodInfo=prodDateInfoOf(targetState,row.expId); if(prodInfo) earliest=prodInfo.date; }
+  var prodKey=null, minOffset=1;   /* 未知生产日期：保持只后移（保守，不回退旧错误） */
+  if(earliest){
+    prodKey=formatYMD(earliest.getFullYear(),earliest.getMonth()+1,earliest.getDate());
+    var dayDiff=Math.round((new Date(earliest.getFullYear(),earliest.getMonth(),earliest.getDate()).getTime()
+      -new Date(originalPutin.getFullYear(),originalPutin.getMonth(),originalPutin.getDate()).getTime())/86400000);
+    minOffset=Math.max(-maxOffset,dayDiff);
+  }
+  for(var offset=minOffset;offset<=maxOffset;offset++){
+    var putin=addDays(originalPutin,offset), takeout=addDays(putin,day);
+    if(prodKey && ymdOf(putin)<prodKey) continue;   /* 防御：绝不早于生产日期 */
+    var putinStatus=operationDateStatus(putin,targetState,provider);
+    var takeoutStatus=operationDateStatus(takeout,targetState,provider);
+    if(!putinStatus.available || !takeoutStatus.available) continue;
+    out.push({
+      putin:putin,
+      takeout:takeout,
+      offsetDays:offset,
+      putinStatus:putinStatus,
+      takeoutStatus:takeoutStatus,
+      holidayCoverageSufficient:!!(putinStatus.holidayCalendar.available&&takeoutStatus.holidayCalendar.available)
+    });
+  }
+  out.sort(function(a,b){ return a.offsetDays-b.offsetDays; });
+  return out;
+}
+
+/* 55℃节点冲突摘要：读取当前有效计划，不修改 row/state。 */
+function build55ConflictSummary(row, targetState, options){
+  var opts=options&&typeof options==="object"?options:{};
+  var provider=opts.provider&&typeof opts.provider.loadYear==="function"
+    ? opts.provider : chinaHolidayCalendarProvider;
+  var day=+(row&&row.day), sourcePutin=row&&(row.effectivePlanPutin||row.putinActual||row.originalPlanPutin);
+  if(!(sourcePutin instanceof Date) || isNaN(sourcePutin.getTime()) || !isFinite(day) || day<0){
+    return {expId:row&&row.expId||"",day:row&&row.day,originalPutin:null,originalTakeout:null,
+      conflictReason:"invalid-date",conflictReasons:[],putinStatus:null,takeoutStatus:null,
+      holidayCoverageStatus:"insufficient",coverageWarning:"官方节假日覆盖不足",candidates:[]};
+  }
+  day=Math.floor(day);
+  var originalPutin=new Date(sourcePutin), originalTakeout=addDays(originalPutin,day);
+  var putinStatus=operationDateStatus(originalPutin,targetState,provider);
+  var takeoutStatus=operationDateStatus(originalTakeout,targetState,provider);
+  var reasons=[];
+  if(!putinStatus.available) reasons.push({action:"putin",reason:putinStatus.reason});
+  if(!takeoutStatus.available) reasons.push({action:"takeout",reason:takeoutStatus.reason});
+  var candidates=reasons.length?suggest55ConflictAlternatives(row,targetState,opts):[];
+  var coverageSufficient=!!(putinStatus.holidayCalendar.available&&takeoutStatus.holidayCalendar.available);
+  for(var i=0;i<candidates.length;i++){
+    if(!candidates[i].holidayCoverageSufficient){ coverageSufficient=false; break; }
+  }
+  return {
+    expId:row.expId||"",
+    day:day,
+    originalPutin:originalPutin,
+    originalTakeout:originalTakeout,
+    conflictReason:reasons.length?reasons[0].reason:"available",
+    conflictReasons:reasons,
+    putinStatus:putinStatus,
+    takeoutStatus:takeoutStatus,
+    holidayCoverageStatus:coverageSufficient?"complete":"insufficient",
+    coverageWarning:coverageSufficient?"":"官方节假日覆盖不足",
+    candidates:candidates
+  };
+}
+
+/* 55℃多节点联合建议：只读取当前排程行与任务06候选，不改写 row/state。
+ * 任务08.3：所有候选只后移（不得早于当前有效计划）；Day<7 独立选择最早合法后移；
+ * Day>=7 在合理窗口内优先减少共同放入批次。备选方案按单节点最小后移选择。 */
+function isUnconfirmed55SuggestionRow(row){
+  if(!row || row.enabled===false || row.status==="不做") return false;
+  if(row.ex && row.ex.putinConfirmed===true) return false;
+  return row.status!=="进行中" && row.status!=="已完成";
+}
+/* 任务09.1：Day<7 选择最早合法候选（可相对当前计划提前，但绝不早于生产日期）；
+ * 候选列表本身已按 offsetDays 升序。 */
+function earliest55Candidate(summary){
+  var candidates=summary&&summary.candidates||[];
+  return candidates.length?candidates[0]:null;
+}
+function reasonable55GroupedCandidates(summary, maxOffsetDays){
+  var candidates=summary&&summary.candidates||[], limit=Math.max(1,Math.floor(+maxOffsetDays||7));
+  var nearby=[];
+  for(var i=0;i<candidates.length;i++){
+    if(Math.abs(candidates[i].offsetDays)<=limit) nearby.push(candidates[i]);
+  }
+  /* 任务09.1：±limit 窗口（含合法提前）；窗口内无候选时退回最早合法候选，保证冲突尽量可解决。 */
+  if(nearby.length) return nearby;
+  return candidates.length?[candidates[0]]:[];
+}
+function assignmentFor55Dates(conflicts, candidateLists, selectedTimes){
+  var selected={}, entries=[], total=0, maxAbs=0;
+  for(var s=0;s<selectedTimes.length;s++) selected[selectedTimes[s]]=true;
+  for(var i=0;i<conflicts.length;i++){
+    var best=null, list=candidateLists[i]||[];
+    for(var c=0;c<list.length;c++){
+      if(!selected[list[c].putin.getTime()]) continue;
+      if(!best || Math.abs(list[c].offsetDays)<Math.abs(best.offsetDays)
+        || (Math.abs(list[c].offsetDays)===Math.abs(best.offsetDays) && list[c].offsetDays>best.offsetDays)) best=list[c];
+    }
+    if(!best) return null;
+    var abs=Math.abs(best.offsetDays);
+    entries.push({summary:conflicts[i],candidate:best});
+    total+=abs;
+    if(abs>maxAbs) maxAbs=abs;
+  }
+  return {entries:entries,totalAbsOffsetDays:total,maxAbsOffsetDays:maxAbs};
+}
+function greedy55GroupedAssignment(conflicts, candidateLists){
+  var remaining=[], chosen=[];
+  for(var i=0;i<conflicts.length;i++) remaining.push(i);
+  while(remaining.length){
+    var options={}, optionOrder=[];
+    for(var r=0;r<remaining.length;r++){
+      var idx=remaining[r], list=candidateLists[idx]||[];
+      for(var c=0;c<list.length;c++){
+        var key=list[c].putin.getTime();
+        if(!options[key]){ options[key]={time:key,cover:[],offsetTotal:0}; optionOrder.push(key); }
+        if(options[key].cover.indexOf(idx)<0){
+          options[key].cover.push(idx); options[key].offsetTotal+=Math.abs(list[c].offsetDays);
+        }
+      }
+    }
+    if(!optionOrder.length) break;
+    optionOrder.sort(function(a,b){
+      var aa=options[a], bb=options[b];
+      return bb.cover.length-aa.cover.length || aa.offsetTotal-bb.offsetTotal || b-a;
+    });
+    var pick=options[optionOrder[0]];
+    chosen.push(pick.time);
+    remaining=remaining.filter(function(idx){ return pick.cover.indexOf(idx)<0; });
+  }
+  return assignmentFor55Dates(conflicts,candidateLists,chosen);
+}
+function best55GroupedAssignment(conflicts, candidateLists){
+  if(!conflicts.length) return {entries:[],totalAbsOffsetDays:0,maxAbsOffsetDays:0};
+  var seen={}, times=[];
+  for(var i=0;i<candidateLists.length;i++){
+    for(var c=0;c<candidateLists[i].length;c++){
+      var time=candidateLists[i][c].putin.getTime();
+      if(!seen[time]){ seen[time]=true; times.push(time); }
+    }
+  }
+  times.sort(function(a,b){ return b-a; });
+  /* 常规试验规模用穷举保证“批次数优先、再总偏移”；极端规模安全降级为贪心覆盖。 */
+  if(conflicts.length>12 || times.length>18) return greedy55GroupedAssignment(conflicts,candidateLists);
+  var best=null;
+  function compare(candidate){
+    if(!candidate) return;
+    if(!best || candidate.totalAbsOffsetDays<best.totalAbsOffsetDays
+      || (candidate.totalAbsOffsetDays===best.totalAbsOffsetDays && candidate.maxAbsOffsetDays<best.maxAbsOffsetDays)) best=candidate;
+  }
+  function choose(start, need, selected){
+    if(need===0){ compare(assignmentFor55Dates(conflicts,candidateLists,selected)); return; }
+    for(var t=start;t<=times.length-need;t++){
+      selected.push(times[t]); choose(t+1,need-1,selected); selected.pop();
+    }
+  }
+  for(var count=1;count<=Math.min(conflicts.length,times.length);count++){
+    best=null; choose(0,count,[]);
+    if(best) return best;
+  }
+  return null;
+}
+function groupsFrom55SuggestionEntries(entries){
+  var groups={}, order=[];
+  for(var i=0;i<entries.length;i++){
+    var entry=entries[i], candidate=entry.candidate, day=entry.summary.day;
+    /* 短/长周期分开做选择；若最终恰好同一时刻放入，展示时按真实批次自然合并。 */
+    var key=String(candidate.putin.getTime());
+    if(!groups[key]){
+      groups[key]={putin:new Date(candidate.putin),days:[],takeouts:[],offsets:[]}; order.push(key);
+    }
+    groups[key].days.push(day);
+    groups[key].takeouts.push(new Date(candidate.takeout));
+    groups[key].offsets.push(candidate.offsetDays);
+  }
+  var out=order.map(function(key){ return groups[key]; });
+  out.forEach(function(group){
+    var zipped=[];
+    for(var i=0;i<group.days.length;i++) zipped.push({day:group.days[i],takeout:group.takeouts[i],offset:group.offsets[i]});
+    zipped.sort(function(a,b){ return a.day-b.day; });
+    group.days=zipped.map(function(x){ return x.day; });
+    group.takeouts=zipped.map(function(x){ return x.takeout; });
+    group.offsets=zipped.map(function(x){ return x.offset; });
+  });
+  out.sort(function(a,b){ return a.putin-b.putin || a.days[0]-b.days[0]; });
+  return out;
+}
+/* 任务09：联合方案评价指标——最终完成时间优先。
+ * latestTakeout=所有被调整节点最晚取出；terminalDay=冲突节点中最大 Day；
+ * terminalTakeout=最高 Day 对应取出；totalDelayDays/maxDelayDays 按后移天数计。 */
+function metricsFor55Assignment(entries, batchCount){
+  var latestTakeout=null, terminalDay=null, terminalTakeout=null, totalDelay=0, maxDelay=0, takeoutTimes=[];
+  for(var i=0;i<entries.length;i++){
+    var candidate=entries[i].candidate, takeout=candidate.takeout, abs=Math.abs(candidate.offsetDays);
+    totalDelay+=abs;
+    if(abs>maxDelay) maxDelay=abs;
+    takeoutTimes.push(takeout.getTime());
+    if(!latestTakeout || takeout.getTime()>latestTakeout.getTime()) latestTakeout=new Date(takeout);
+    if(terminalDay==null || entries[i].summary.day>terminalDay) terminalDay=entries[i].summary.day;
+  }
+  if(terminalDay!=null){
+    for(var j=0;j<entries.length;j++){
+      if(entries[j].summary.day===terminalDay){
+        var tt=entries[j].candidate.takeout;
+        if(!terminalTakeout || tt.getTime()>terminalTakeout.getTime()) terminalTakeout=new Date(tt);
+      }
+    }
+  }
+  takeoutTimes.sort(function(a,b){ return a-b; });
+  return {latestTakeout:latestTakeout,terminalDay:terminalDay,terminalTakeout:terminalTakeout,
+    batchCount:batchCount,totalDelayDays:totalDelay,maxDelayDays:maxDelay,takeoutTimes:takeoutTimes};
+}
+/* 增加批次需至少提前的天数，才算“明显时间收益”（避免为 1 天拆批次） */
+var EARLIER_COMPLETION_MIN_DAYS=2;
+function compare55FinalAssignment(a,b){
+  var ma=a.metrics, mb=b.metrics;
+  var la=ma.latestTakeout?ma.latestTakeout.getTime():0, lb=mb.latestTakeout?mb.latestTakeout.getTime():0;
+  if(la!==lb) return la-lb;
+  var ta=ma.terminalTakeout?ma.terminalTakeout.getTime():0, tb=mb.terminalTakeout?mb.terminalTakeout.getTime():0;
+  if(ta!==tb) return ta-tb;
+  if(ma.batchCount!==mb.batchCount) return ma.batchCount-mb.batchCount;
+  /* 任务09.2：时间与批次相同时，优先更早的各节点 takeout（升序列表逐项比较） */
+  var sortA=ma.takeoutTimes||[], sortB=mb.takeoutTimes||[];
+  for(var i=0;i<Math.min(sortA.length,sortB.length);i++){
+    if(sortA[i]!==sortB[i]) return sortA[i]-sortB[i];
+  }
+  if(sortA.length!==sortB.length) return sortA.length-sortB.length;
+  if(ma.totalDelayDays!==mb.totalDelayDays) return ma.totalDelayDays-mb.totalDelayDays;
+  return ma.maxDelayDays-mb.maxDelayDays;
+}
+/* 任务09：在 [最少批次, 最少批次+1] 范围内按新优先级选推荐方案：
+ * latestTakeout 最早 → terminalTakeout 最早 → 批次数少 → 总延后小 → 单节点最大延后小；
+ * 只有比最少批次方案至少提前 EARLIER_COMPLETION_MIN_DAYS 天时才接受 +1 批次。 */
+function best55FinalGroupedAssignment(conflicts, candidateLists){
+  if(!conflicts.length) return {entries:[],batchCount:0,metrics:metricsFor55Assignment([],0)};
+  var seen={}, times=[];
+  for(var i=0;i<candidateLists.length;i++){
+    for(var c=0;c<candidateLists[i].length;c++){
+      var time=candidateLists[i][c].putin.getTime();
+      if(!seen[time]){ seen[time]=true; times.push(time); }
+    }
+  }
+  times.sort(function(a,b){ return b-a; });
+  var maxCount=Math.min(conflicts.length,times.length);
+  if(!maxCount) return null;
+  if(conflicts.length>12 || times.length>18){
+    /* 极端规模安全降级：贪心覆盖（不再做 +1 批次搜索） */
+    var greedyRes=greedy55GroupedAssignment(conflicts,candidateLists);
+    if(!greedyRes) return null;
+    var seenG={}, greedyBatch=0;
+    for(var gi=0;gi<greedyRes.entries.length;gi++){
+      var tkey=greedyRes.entries[gi].candidate.putin.getTime();
+      if(!seenG[tkey]){ seenG[tkey]=true; greedyBatch++; }
+    }
+    return {entries:greedyRes.entries,batchCount:greedyBatch,metrics:metricsFor55Assignment(greedyRes.entries,greedyBatch)};
+  }
+  function collect(count, out){
+    function choose(start, need, selected){
+      if(need===0){
+        var assign=assignmentFor55Dates(conflicts,candidateLists,selected);
+        if(assign) out.push({entries:assign.entries,batchCount:count,
+          totalAbsOffsetDays:assign.totalAbsOffsetDays,maxAbsOffsetDays:assign.maxAbsOffsetDays});
+        return;
+      }
+      for(var t=start;t<=times.length-need;t++){
+        selected.push(times[t]); choose(t+1,need-1,selected); selected.pop();
+      }
+    }
+    choose(0,count,[]);
+  }
+  var minBatch=null;
+  for(var count=1;count<=maxCount;count++){
+    var probe=[];
+    collect(count,probe);
+    if(probe.length){ minBatch=count; break; }
+  }
+  if(minBatch==null) return null;
+  var all=[];
+  for(var cnt=minBatch;cnt<=Math.min(maxCount,minBatch+1);cnt++) collect(cnt,all);
+  var base=null, candidates=[];
+  for(var a=0;a<all.length;a++){
+    all[a].metrics=metricsFor55Assignment(all[a].entries,all[a].batchCount);
+    if(all[a].batchCount===minBatch){
+      if(!base || compare55FinalAssignment(all[a],base)<0) base=all[a];
+    }else{
+      candidates.push(all[a]);
+    }
+  }
+  var DAY=86400000, best=base, bm=base.metrics;
+  for(var b=0;b<candidates.length;b++){
+    var cand=candidates[b], m=cand.metrics;
+    var latestEarlier=bm.latestTakeout&&m.latestTakeout&&bm.latestTakeout.getTime()-m.latestTakeout.getTime()>=EARLIER_COMPLETION_MIN_DAYS*DAY;
+    var terminalEarlier=bm.terminalTakeout&&m.terminalTakeout&&bm.terminalTakeout.getTime()-m.terminalTakeout.getTime()>=EARLIER_COMPLETION_MIN_DAYS*DAY;
+    if(!latestEarlier && !terminalEarlier) continue;   /* 无明确时间收益：保持更少批次 */
+    if(!best || compare55FinalAssignment(cand,best)<0) best=cand;
+  }
+  return best;
+}
+function make55GroupedPlan(expId, conflicts, entries, strategy, explanation){
+  var groups=groupsFrom55SuggestionEntries(entries), total=0, advances=0, delays=0, coverageWarning="";
+  for(var i=0;i<entries.length;i++){
+    var candidate=entries[i].candidate;
+    total+=Math.abs(candidate.offsetDays);
+    if(candidate.offsetDays<0) advances++;
+    else if(candidate.offsetDays>0) delays++;
+    if(!candidate.holidayCoverageSufficient) coverageWarning="官方节假日覆盖不足";
+  }
+  for(var c=0;c<conflicts.length;c++) if(conflicts[c].coverageWarning) coverageWarning="官方节假日覆盖不足";
+  var metrics=metricsFor55Assignment(entries,groups.length);
+  return {expId:expId,conflicts:conflicts,groups:groups,batchCount:groups.length,
+    totalAbsOffsetDays:total,advanceCount:advances,delayCount:delays,
+    coverageWarning:coverageWarning,strategy:strategy,explanation:explanation,
+    latestTakeout:metrics.latestTakeout,terminalDay:metrics.terminalDay,
+    terminalTakeout:metrics.terminalTakeout,totalDelayDays:metrics.totalDelayDays,
+    maxDelayDays:metrics.maxDelayDays};
+}
+function grouped55PlanSignature(plan){
+  return (plan.groups||[]).map(function(group){
+    return group.putin.getTime()+":"+group.days.join(",");
+  }).join("|");
+}
+function build55GroupedConflictSuggestions(rows, targetState, options){
+  var opts=options&&typeof options==="object"?options:{}, source=Array.isArray(rows)?rows:[];
+  var expId=opts.expId||(source[0]&&source[0].expId)||"", maxOffset=+opts.maxReasonableOffsetDays;
+  if(!isFinite(maxOffset)||maxOffset<1) maxOffset=7;
+  maxOffset=Math.floor(maxOffset);
+  var conflicts=[];
+  for(var i=0;i<source.length;i++){
+    var row=source[i];
+    if((expId && row.expId!==expId) || !isUnconfirmed55SuggestionRow(row)) continue;
+    var summary=build55ConflictSummary(row,targetState,opts);
+    if(summary.conflictReasons.length) conflicts.push(summary);
+  }
+  conflicts.sort(function(a,b){ return a.day-b.day; });
+  if(!conflicts.length) return null;
+
+  var shortConflicts=[], longConflicts=[];
+  for(var c=0;c<conflicts.length;c++) (conflicts[c].day<7?shortConflicts:longConflicts).push(conflicts[c]);
+  var shortEntries=[], unresolved=0;
+  for(var s=0;s<shortConflicts.length;s++){
+    var shortCandidate=earliest55Candidate(shortConflicts[s]);
+    if(shortCandidate) shortEntries.push({summary:shortConflicts[s],candidate:shortCandidate});
+    else unresolved++;
+  }
+  var usableLong=[], candidateLists=[];
+  if(longConflicts.length){
+    for(var l=0;l<longConflicts.length;l++){
+      var list=reasonable55GroupedCandidates(longConflicts[l],maxOffset);
+      if(list.length){ usableLong.push(longConflicts[l]); candidateLists.push(list); }
+      else unresolved++;
+    }
+  }
+  /* 任务09.2：长周期优化必须复用短周期已选中的放入批次——
+   * 短周期节点以“单一固定候选”并入同一优化器，其放入时间成为已存在的免费批次，
+   * 长周期节点加入该日期不增加总体 batchCount；备选最少批次方案同样按真实批次计算。 */
+  var fullConflicts=shortConflicts.filter(function(sc){ return sc.candidates.length>0; });
+  var fullLists=shortEntries.map(function(entry){ return [entry.candidate]; });
+  for(var lf=0;lf<usableLong.length;lf++){
+    fullConflicts.push(usableLong[lf]);
+    fullLists.push(candidateLists[lf]);
+  }
+  var recommendedEntries=[];
+  if(fullConflicts.length){
+    /* 任务09：推荐 = 最终完成最早优先（批次数最多比最少批次多 1 且需有明显时间收益） */
+    var recommendedFull=best55FinalGroupedAssignment(fullConflicts,fullLists);
+    if(recommendedFull) recommendedEntries=recommendedFull.entries;
+    else{ recommendedEntries=shortEntries.slice(); unresolved+=usableLong.length; }
+  }else{
+    recommendedEntries=shortEntries.slice();
+  }
+  var explanation="候选不早于生产日期（允许相对当前计划提前）；优先缩短最终完成时间（最高 Day 尽量早），并复用已有放入批次，批次数最多比最少批次方案多 1。";
+  if(unresolved) explanation+=" 另有 "+unresolved+" 个冲突节点未找到可行候选。";
+  var recommended=make55GroupedPlan(expId,conflicts,recommendedEntries,"delay-grouped",explanation);
+
+  /* 任务09：备选改为“最少批次方案”对照（同样按含短周期批次在内的真实批次数）；完全相同则不显示 */
+  var minBatchEntries=[];
+  if(fullConflicts.length){
+    var minBatchFull=best55GroupedAssignment(fullConflicts,fullLists);
+    if(minBatchFull) minBatchEntries=minBatchFull.entries;
+  }
+  if(!minBatchEntries.length) minBatchEntries=shortEntries.slice();
+  var minimumBatch=make55GroupedPlan(expId,conflicts,minBatchEntries,"minimum-batch",
+    "对照：最少批次方案（放入批次最少，最终完成可能更晚）。");
+  recommended.alternatives=[];
+  if(minBatchEntries.length===recommendedEntries.length && grouped55PlanSignature(minimumBatch)!==grouped55PlanSignature(recommended)){
+    recommended.alternatives.push(minimumBatch);
+  }
+  return recommended;
+}
+function nextOperationDateAtOrAfter(dt, rules){
+  if(!(dt instanceof Date) || isNaN(dt.getTime())) return null;
+  var next=new Date(dt);
+  while(!isOperationDateAvailable(next,rules)) next=addDays(next,1);
+  return next;
+}
+
+function normalizeOperationDateList(values){
+  var seen={}, dates=[], source=values;
+  if(!Array.isArray(source) && source && typeof source.forEach==="function"){
+    source=[]; values.forEach(function(value){ source.push(value); });
+  }
+  if(!Array.isArray(source)) return dates;
+  for(var i=0;i<source.length;i++){
+    var parsed=parseDateInput(String(source[i]||"").trim());
+    if(!parsed) continue;
+    var key=formatYMD(parsed.y,parsed.m,parsed.d);
+    if(!seen[key]){ seen[key]=true; dates.push(key); }
+  }
+  dates.sort();
+  return dates;
+}
+function normalizeCustomSkipDates(values){ return normalizeOperationDateList(values); }
+function normalizeHolidayCalendar(value, fallback){
+  var raw=value&&typeof value==="object"?value:{}, defaults=fallback||{};
+  var year=+(raw.year!=null?raw.year:defaults.year);
+  if(!isFinite(year) || year<1) year=null; else year=Math.floor(year);
+  var holidayDates=normalizeOperationDateList(raw.holidayDates);
+  var workdayOverrides=normalizeOperationDateList(raw.workdayOverrides);
+  var available=raw.available!=null ? !!raw.available
+    : (defaults.available!=null ? !!defaults.available : !!(holidayDates.length||workdayOverrides.length));
+  return {
+    year:year,
+    holidayDates:holidayDates,
+    workdayOverrides:workdayOverrides,
+    source:String(raw.source||defaults.source||"disabled"),
+    version:String(raw.version||defaults.version||"0"),
+    sourceUrl:String(raw.sourceUrl||defaults.sourceUrl||""),
+    available:available,
+    status:String(raw.status||defaults.status||(available?"available":"unavailable"))
+  };
+}
+function createHolidayCalendarProvider(options){
+  var opts=options&&typeof options==="object"?options:{};
+  var source=String(opts.source||"disabled"), version=String(opts.version||"0");
+  var sourceUrl=String(opts.sourceUrl||"");
+  return {
+    source:source, version:version, sourceUrl:sourceUrl,
+    loadYear:function(year){
+      var raw=typeof opts.loadYear==="function"?opts.loadYear(year):null;
+      return normalizeHolidayCalendar(raw,{year:year,source:source,version:version,sourceUrl:sourceUrl});
+    }
+  };
+}
+function loadHolidayCalendar(provider, year){
+  var target=provider&&typeof provider.loadYear==="function"
+    ? provider : createHolidayCalendarProvider();
+  return normalizeHolidayCalendar(target.loadYear(year),{
+    year:year, source:target.source||"disabled", version:target.version||"0",
+    sourceUrl:target.sourceUrl||""
+  });
+}
+
+/* 中国政府网 / 国务院办公厅年度数据。仅内置已核实年份；未知年份明确 unavailable，不猜测。 */
+var CHINA_HOLIDAY_DATASETS={
+  "2026":{
+    year:2026,
+    holidayDates:[
+      "2026-01-01","2026-01-02","2026-01-03",
+      "2026-02-15","2026-02-16","2026-02-17","2026-02-18","2026-02-19","2026-02-20","2026-02-21","2026-02-22","2026-02-23",
+      "2026-04-04","2026-04-05","2026-04-06",
+      "2026-05-01","2026-05-02","2026-05-03","2026-05-04","2026-05-05",
+      "2026-06-19","2026-06-20","2026-06-21",
+      "2026-09-25","2026-09-26","2026-09-27",
+      "2026-10-01","2026-10-02","2026-10-03","2026-10-04","2026-10-05","2026-10-06","2026-10-07"
+    ],
+    workdayOverrides:["2026-01-04","2026-02-14","2026-02-28","2026-05-09","2026-09-20","2026-10-10"],
+    source:"国务院办公厅",
+    version:"国办发明电〔2025〕7号",
+    sourceUrl:"https://www.gov.cn/gongbao/2025/issue_12406/material/gwygb202532.pdf",
+    available:true,
+    status:"loaded"
+  }
+};
+function createChinaHolidayCalendarProvider(){
+  return createHolidayCalendarProvider({
+    source:"国务院办公厅",
+    version:"builtin-cn-holiday-v1",
+    loadYear:function(year){
+      var key=String(+year), dataset=CHINA_HOLIDAY_DATASETS[key];
+      if(dataset) return dataset;
+      return {year:+year,holidayDates:[],workdayOverrides:[],source:"国务院办公厅",
+        version:"unavailable",sourceUrl:"",available:false,status:"unavailable"};
+    }
+  });
+}
+var chinaHolidayCalendarProvider=createChinaHolidayCalendarProvider();
+function cleanCalendarRules(rules){
+  return {customSkipDates:normalizeCustomSkipDates(rules&&rules.customSkipDates)};
+}
+function normalizeCalendarRules(targetState){
+  if(!targetState || typeof targetState!=="object") return false;
+  var raw=targetState.calendarRules, clean=cleanCalendarRules(raw);
+  var changed=!raw || typeof raw!=="object" || !Array.isArray(raw.customSkipDates)
+    || JSON.stringify(raw.customSkipDates)!==JSON.stringify(clean.customSkipDates);
+  targetState.calendarRules=clean;
+  return changed;
+}
+function addCustomSkipDate(targetState, value){
+  var parsed=parseDateInput(String(value||"").trim());
+  if(!parsed || !targetState || typeof targetState!=="object") return "";
+  normalizeCalendarRules(targetState);
+  var key=formatYMD(parsed.y,parsed.m,parsed.d);
+  targetState.calendarRules.customSkipDates=normalizeCustomSkipDates(
+    targetState.calendarRules.customSkipDates.concat([key]));
+  return key;
+}
+function removeCustomSkipDate(targetState, value){
+  if(!targetState || typeof targetState!=="object") return false;
+  normalizeCalendarRules(targetState);
+  var parsed=parseDateInput(String(value||"").trim());
+  if(!parsed) return false;
+  var key=formatYMD(parsed.y,parsed.m,parsed.d), before=targetState.calendarRules.customSkipDates.length;
+  targetState.calendarRules.customSkipDates=targetState.calendarRules.customSkipDates.filter(function(date){ return date!==key; });
+  return targetState.calendarRules.customSkipDates.length!==before;
+}
+/* UI/持久化向纯规则层的唯一转换口；holidayCalendar 缺失时保持 V0.6/V0.7 既有规则。 */
+function operationDateRulesForState(targetState, holidayCalendar){
+  var clean=cleanCalendarRules(targetState&&targetState.calendarRules);
+  var calendar=normalizeHolidayCalendar(holidayCalendar);
+  return {
+    customSkipDates:clean.customSkipDates,
+    holidayDates:calendar.holidayDates,
+    workdayOverrides:calendar.workdayOverrides
+  };
+}
+
 function fmtDT(dt){ return ymdOf(dt)+" "+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
 function fmtCN(dt){ return (dt.getMonth()+1)+"月"+dt.getDate()+"日 "+weekdayName(dt)+" "+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
 /* 紧凑时间显示（主行用）：09-22 10:00；完整信息（含年份/星期）在 title 与详情 */
 function fmtCompact(dt){ return pad2(dt.getMonth()+1)+"-"+pad2(dt.getDate())+" "+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
 function fmtFull(dt){ return ymdOf(dt)+" "+weekdayName(dt)+" "+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
+function operationDateStatusHTML(dt, targetState){
+  if(!dt) return "";
+  var info=operationDateStatus(dt,targetState), labels={
+    "custom-skip":"自定义跳过","holiday":"法定节假日","weekend":"周末"
+  };
+  var html=labels[info.reason]
+    ? '<span class="operation-date-note conflict">⚠ '+labels[info.reason]+'｜原计划不变</span>' : "";
+  if(!info.holidayCalendar.available){
+    html+='<span class="operation-date-note coverage">该年份官方节假日数据未加载/不可用</span>';
+  }
+  return html;
+}
+function offset55Text(offset){
+  return offset>0?"延后 "+offset+" 天":"提前 "+Math.abs(offset)+" 天";
+}
+function operation55GroupedPlanHTML(plan, title){
+  if(!plan || !plan.groups || !plan.groups.length) return "";
+  var offsetParts=[];
+  if(plan.advanceCount>0) offsetParts.push('提前 '+plan.advanceCount+' 个');
+  if(plan.delayCount>0) offsetParts.push('延后 '+plan.delayCount+' 个');
+  var html='<div class="operation-suggestion-joint"><div class="operation-suggestion-joint-title">'+esc(title)+'</div>'
+    +'<div>预计最终完成：'+fmtDT(plan.latestTakeout)
+    +(plan.terminalDay!=null?'；Day'+plan.terminalDay+' 完成：'+fmtDT(plan.terminalTakeout):'')
+    +'；放入批次：'+plan.batchCount+'；总偏移 '+plan.totalDelayDays+' 天'
+    +(offsetParts.length?'（'+offsetParts.join('，')+'）':'')+'</div>';
+  if(plan.coverageWarning){
+    html+='<div class="operation-suggestion-warning">⚠ '+esc(plan.coverageWarning)+'；联合建议仅按已知规则筛选，不能视为完整确认。</div>';
+  }
+  for(var i=0;i<plan.groups.length;i++){
+    var group=plan.groups[i], details=[];
+    for(var d=0;d<group.days.length;d++){
+      details.push('Day'+group.days[d]+' 取出 '+fmtDT(group.takeouts[d])+'（'+offset55Text(group.offsets[d])+'）');
+    }
+    html+='<div class="operation-suggestion-joint-group"><b>Day'+esc(group.days.join('、Day'))+'</b> 一起放入：'
+      +esc(fmtDT(group.putin))+'<br>'+esc(details.join('；'))+'</div>';
+  }
+  return html+'<div class="muted" style="margin-top:4px">'+esc(plan.explanation)+'</div></div>';
+}
+function rows55ForGroupedSuggestion(row, targetState){
+  if(!row || !targetState || !Array.isArray(targetState.experiments)) return row?[row]:[];
+  var rows=computeSchedule(targetState).rows.filter(function(candidate){ return candidate.expId===row.expId; });
+  return rows.length?rows:[row];
+}
+function operation55SuggestionHTML(row, targetState, conflictTime){
+  if(!conflictTime) return "";
+  var summary=build55ConflictSummary(row,targetState);
+  /* 任务08.1：未确认放入节点按完整冲突摘要判断——放入或取出任一不可操作都显示建议，
+   * 不能只检查当前显示列的单个时间；已确认/进行中/已完成维持既有行为。 */
+  var show=(row.status==="未放入")
+    ? summary.conflictReasons.length>0
+    : !operationDateStatus(conflictTime,targetState).available;
+  if(!show) return "";
+  var candidates=summary.candidates.slice(0,6);
+  if(!candidates.length) return "";
+  var html='<details class="operation-suggestion"><summary>查看调整建议</summary>'
+    +'<div class="operation-suggestion-box">';
+  if(summary.conflictReasons.length){
+    var reasonLabels={"custom-skip":"自定义跳过","holiday":"法定节假日","weekend":"周末","calendar-unavailable":"节假日数据未覆盖"};
+    var reasonTxt=summary.conflictReasons.map(function(reason){
+      return (reason.action==="putin"?"放入":"取出")+"日冲突（"+(reasonLabels[reason.reason]||reason.reason)+"）";
+    }).join("；");
+    html+='<div class="operation-date-note conflict">⚠ '+esc(reasonTxt)+'｜原计划不变</div>';
+  }
+  html+='<div>只读候选；每组都保持 Day'+esc(summary.day)+' 的 '+esc(summary.day*24)+' 小时间隔，不会自动修改计划。</div>';
+  if(summary.coverageWarning){
+    html+='<div class="operation-suggestion-warning">⚠ '+esc(summary.coverageWarning)+'；候选仅按周末与自定义跳过日等已知规则筛选。</div>';
+  }
+  html+='<div style="margin-top:5px"><b>单节点候选</b></div><ul>';
+  for(var i=0;i<candidates.length;i++){
+    var c=candidates[i], offsetText=offset55Text(c.offsetDays);
+    html+='<li><b>'+esc(offsetText)+'</b>：放入 '+esc(fmtDT(c.putin))+' → 取出 '+esc(fmtDT(c.takeout))+'</li>';
+  }
+  html+='</ul>';
+  var grouped=isUnconfirmed55SuggestionRow(row)
+    ? build55GroupedConflictSuggestions(rows55ForGroupedSuggestion(row,targetState),targetState,{expId:row.expId}) : null;
+  if(grouped){
+    html+=operation55GroupedPlanHTML(grouped,'联合建议｜推荐：尽早完成');
+    /* 任务08：仅当当前联合方案全部节点仍满足应用条件时提供采用入口；
+     * 点击只打开确认弹窗，绝不直接写 state。 */
+    if(validate55GroupedSuggestionPlanForApply(targetState,row.expId,grouped).ok){
+      html+='<div style="margin-top:6px"><button class="mini" data-act="groupedApplyOpen" data-id="'+esc(row.expId)+'" data-sig="'+esc(grouped55PlanSignature(grouped))+'">采用推荐方案</button></div>';
+    }
+    if(grouped.alternatives&&grouped.alternatives.length){
+      html+='<details class="operation-suggestion-joint-alt"><summary>联合建议备选：最少批次</summary>'
+        +operation55GroupedPlanHTML(grouped.alternatives[0],'备选方案｜最少批次')+'</details>';
+    }
+  }
+  return html+'</div></details>';
+}
+/* 任务08：55℃联合建议人工确认采用。A. validate 只读校验当前 state 下的应用资格（原子：
+ * 任一节点不满足则整组拒绝）；B. apply 校验通过后一次性写入 adjustedPlanPutin。
+ * 只写计划放入时间；取出继续由 放入+Day×24h 自动推导；绝不写事实字段与确认状态。 */
+function validate55GroupedSuggestionPlanForApply(targetState, expId, plan){
+  if(!targetState || typeof targetState!=="object") return {ok:false,error:"状态无效，无法采用推荐方案。"};
+  if(!plan || !Array.isArray(plan.groups) || !plan.groups.length) return {ok:false,error:"当前没有可应用的推荐方案。"};
+  var rows=computeSchedule(targetState).rows, changes=[], seen={};
+  for(var g=0;g<plan.groups.length;g++){
+    var group=plan.groups[g];
+    if(!(group.putin instanceof Date) || isNaN(group.putin.getTime())) return {ok:false,error:"推荐方案包含无效放入时间，未采用。"};
+    for(var d=0;d<group.days.length;d++){
+      var day=+group.days[d], takeout=group.takeouts[d];
+      if(!isFinite(day) || day<0) return {ok:false,error:"推荐方案包含无效 Day，未采用。"};
+      if(!(takeout instanceof Date) || isNaN(takeout.getTime())) return {ok:false,error:"推荐方案包含无效取出时间，未采用。"};
+      if(takeout.getTime()-group.putin.getTime()!==day*86400000) return {ok:false,error:"推荐方案不满足 取出=放入+Day×24h，未采用。"};
+      if(seen[day]) return {ok:false,error:"推荐方案重复包含 Day"+day+"，未采用。"};
+      seen[day]=true;
+      var row=null;
+      for(var r=0;r<rows.length;r++){
+        if(rows[r].expId===expId && rows[r].day===day){ row=rows[r]; break; }
+      }
+      if(!row || !isUnconfirmed55SuggestionRow(row)) return {ok:false,error:"Day"+day+" 已确认放入或状态已变化，整组未采用。"};
+      var summary=build55ConflictSummary(row,targetState);
+      if(!summary.conflictReasons.length) return {ok:false,error:"Day"+day+" 已无冲突，整组未采用（请重新查看调整建议）。"};
+      /* 任务09.1 第二道防线：唯一时间下限是生产日期——相对当前计划提前合法，早于生产日期拒绝 */
+      var prodApply=prodDateInfoOf(targetState,expId);
+      if(prodApply && ymdOf(group.putin)<prodApply.key){
+        return {ok:false,error:"Day"+day+" 推荐放入早于生产日期，整组未采用。"};
+      }
+      var putinStatus=operationDateStatus(group.putin,targetState);
+      var takeoutStatus=operationDateStatus(takeout,targetState);
+      if(!putinStatus.available) return {ok:false,error:"Day"+day+" 推荐放入日期不可操作，整组未采用。"};
+      if(!takeoutStatus.available) return {ok:false,error:"Day"+day+" 推荐取出日期不可操作，整组未采用。"};
+      changes.push({day:day,putin:new Date(group.putin)});
+    }
+  }
+  if(!changes.length) return {ok:false,error:"当前没有可应用的推荐节点。"};
+  return {ok:true,changes:changes};
+}
+function apply55GroupedSuggestionPlan(targetState, expId, plan){
+  var checked=validate55GroupedSuggestionPlanForApply(targetState, expId, plan);
+  if(!checked.ok) return checked;
+  var applied=0;
+  for(var i=0;i<checked.changes.length;i++){
+    var change=checked.changes[i];
+    var ex=exOf(targetState, expId, change.day);
+    var want=fmtDL(change.putin);
+    if(ex.adjustedPlanPutin===want) continue;      /* 幂等：已等于目标时间不再重复写 */
+    ex.adjustedPlanPutin=want;
+    targetState.executions[exKey(expId, change.day)]=ex;
+    applied++;
+  }
+  return {ok:true,applied:applied,changes:checked.changes};
+}
+/* 采用确认弹窗：按放入批次分组展示 Day 与对应取出时间；确认才写 state。 */
+function apply55GroupedPlanConfirmHTML(exp, plan){
+  var html='<h3>采用推荐方案</h3><div class="confirmbox">将调整以下55℃节点：</div>';
+  for(var g=0;g<plan.groups.length;g++){
+    var group=plan.groups[g];
+    html+='<div class="confirmbox"><b>'+esc(fmtCompact(group.putin))+' 放入：</b><br>';
+    for(var d=0;d<group.days.length;d++){
+      html+='Day'+esc(group.days[d])+' → '+esc(fmtCompact(group.takeouts[d]))+'<br>';
+    }
+    html+='</div>';
+  }
+  return html+'<div class="muted">仅调整上述冲突节点，无冲突节点保持原计划。</div>'
+    +'<div class="m-foot">'
+    +'<button data-act="groupedApplyYes" data-id="'+esc(exp.id)+'" data-sig="'+esc(grouped55PlanSignature(plan))+'">确认采用</button>'
+    +'<button class="ghost" data-act="closeModal">取消</button></div>';
+}
+/* 任务08.1：55℃试验级冲突摘要——排程页试验区块顶部展示未放入冲突节点数量与 Day 列表，
+ * 【查看联合调整建议】复用任务08的 groupedApplyOpen 确认采用流程，不建立第二套算法。 */
+function exp55ConflictSummaryHTML(item, targetState){
+  if(!item || item.kind!=="ok" || !item.exp || item.exp.condition==="36±1℃") return "";
+  var plan=build55GroupedConflictSuggestions(item.rows, targetState, {expId:item.exp.id});
+  if(!plan || !validate55GroupedSuggestionPlanForApply(targetState, item.exp.id, plan).ok) return "";
+  var daysTxt=plan.conflicts.map(function(conflict){ return "Day"+conflict.day; }).join("、");
+  return '<div class="operation-date-note conflict" style="display:block;margin:6px 0">'
+    +'⚠ 当前计划存在 '+plan.conflicts.length+' 个不可操作日冲突：'+esc(daysTxt)+' '
+    +'<button class="mini" data-act="groupedApplyOpen" data-id="'+esc(item.exp.id)+'" data-sig="'+esc(grouped55PlanSignature(plan))+'">查看联合调整建议</button>'
+    +'</div>';
+}
+/* 任务08.4重做：历史计划异常检测（只读，不修改 state）。
+ * 按“数据本身违反当前业务不变量”判断，绝不按版本号猜测试数据；
+ * 正常执行事实（已完成、进行中且实际放入≥生产日期）绝不进入。 */
+function collect55LegacyPlanAnomalies(targetState, expId){
+  var out=[];
+  if(!targetState || typeof targetState!=="object") return out;
+  var exp=null;
+  if(Array.isArray(targetState.experiments)){
+    for(var e=0;e<targetState.experiments.length;e++){
+      if(targetState.experiments[e].id===expId){ exp=targetState.experiments[e]; break; }
+    }
+  }
+  if(!exp || exp.condition==="36±1℃") return out;
+  var prod=exp.prodDate?parseDateInput(exp.prodDate):null;
+  var prodKey=prod?formatYMD(prod.y,prod.m,prod.d):null;
+  var putinDate=exp.putinDate?parseDateInput(exp.putinDate):null;
+  /* A：试验级——计划放入日期早于生产日期 */
+  if(prod && putinDate && ymdCmp(putinDate,prod)<0){
+    out.push({type:"exp-putin-before-prod",day:null,expId:expId,
+      text:"试验计划放入日期早于生产日期",
+      currentText:"计划放入 "+formatYMD(putinDate.y,putinDate.m,putinDate.d)+"；生产日期 "+prodKey,
+      ruleText:"55℃ 计划放入不得早于生产日期（同一天允许）。",
+      fix:"experiment-edit"});
+  }
+  var rows=computeSchedule(targetState).rows;
+  for(var i=0;i<rows.length;i++){
+    var row=rows[i];
+    if(row.expId!==expId) continue;
+    var ex=row.ex||{};
+    /* D：硬错误——已确认实际放入早于生产日期（仅进行中；已完成绝不处理） */
+    if(ex.putinConfirmed===true && ex.completeConfirmed!==true && ex.putinTime){
+      var putinT=parseDateTime(ex.putinTime);
+      if(putinT && prodKey && ymdOf(putinT)<prodKey){
+        out.push({type:"hard-putin-before-prod",day:row.day,expId:expId,
+          text:"Day"+row.day+" 实际放入时间早于生产日期（历史错误确认）",
+          currentText:"实际放入 "+fmtDT(putinT)+"；生产日期 "+prodKey,
+          ruleText:"实际放入不得早于生产日期；此类记录经确认后可解除并重新排程。",
+          fix:"hard-undo"});
+        continue;   /* 硬错误节点不再重复报计划类异常 */
+      }
+    }
+    if(row.status!=="未放入") continue;
+    var eff=row.effectivePlanPutin, adj=row.adjustedPlanPutin;
+    /* A2：节点有效计划放入早于生产日期 */
+    if(eff && prodKey && ymdOf(eff)<prodKey){
+      out.push({type:"plan-putin-before-prod",day:row.day,expId:expId,
+        text:"Day"+row.day+" 计划放入早于生产日期",
+        currentText:"当前计划放入 "+fmtDT(eff)+"；生产日期 "+prodKey,
+        ruleText:"55℃ 计划放入不得早于生产日期（同一天允许）。",
+        fix:adj?"plan-reset":"experiment-edit"});
+      continue;
+    }
+    /* 任务09.1：相对原计划“提前”本身不再是异常——唯一时间边界是生产日期
+     * （早于生产日期已由上方 plan-putin-before-prod 报告）；直接进入冲突检测。 */
+    /* C：当前有效计划仍卡在不可操作日（复用当前冲突检测） */
+    var summary=build55ConflictSummary(row,targetState);
+    if(summary.conflictReasons.length){
+      var labels={"custom-skip":"自定义跳过","holiday":"法定节假日","weekend":"周末","calendar-unavailable":"节假日数据未覆盖"};
+      var reasonTxt=summary.conflictReasons.map(function(reason){
+        return (reason.action==="putin"?"放入":"取出")+"日（"+(labels[reason.reason]||reason.reason)+"）";
+      }).join("；");
+      out.push({type:"legacy-unavailable-plan",day:row.day,expId:expId,
+        text:"Day"+row.day+" 当前计划存在不可操作日冲突",
+        currentText:reasonTxt,
+        ruleText:"可按当前规则重新计算合法后移方案（不早于当前计划）。",
+        fix:"replan"});
+    }
+  }
+  return out;
+}
+function anomalyListSignature(anomalies){
+  return anomalies.map(function(a){ return a.type+":"+a.day; }).join("|");
+}
+/* 任务08.4重做：执行单项修正（先按当前 state 重检测，异常已消失即拒绝）。
+ * plan-reset → 清除旧版提前调整恢复原计划；replan → 按当前联合推荐原子写入；
+ * hard-undo → 复用 undoPutinRecord 解除错误确认（person/note/adjustedPlanPutin 保留）；
+ * experiment-edit → 不自动改，提示到试验管理修正。 */
+function apply55LegacyRepairFix(targetState, expId, anomaly){
+  if(!targetState || !anomaly || !anomaly.type) return {ok:false,error:"修正参数无效。"};
+  var current=null;
+  var fresh=collect55LegacyPlanAnomalies(targetState,expId);
+  for(var i=0;i<fresh.length;i++){
+    if(fresh[i].type===anomaly.type && fresh[i].day===anomaly.day){ current=fresh[i]; break; }
+  }
+  if(!current) return {ok:false,error:"该异常已不存在或状态已变化，请重新检查。"};
+  if(current.fix==="experiment-edit") return {ok:false,error:"请在试验管理中修正计划放入日期。"};
+  if(current.fix==="plan-reset"){
+    var exR=exOf(targetState,expId,current.day);
+    delete exR.adjustedPlanPutin;
+    targetState.executions[exKey(expId,current.day)]=exR;
+    return {ok:true,action:"plan-reset",day:current.day};
+  }
+  if(current.fix==="hard-undo"){
+    var exH=exOf(targetState,expId,current.day);
+    if(exH.putinConfirmed!==true || exH.completeConfirmed===true) return {ok:false,error:"节点状态已变化，不能解除确认。"};
+    undoPutinRecord(exH);
+    targetState.executions[exKey(expId,current.day)]=exH;
+    return {ok:true,action:"hard-undo",day:current.day};
+  }
+  if(current.fix==="replan"){
+    var plan=build55GroupedConflictSuggestions(computeSchedule(targetState).rows,targetState,{expId:expId});
+    if(!plan) return {ok:false,error:"当前没有可应用的推荐方案。"};
+    var result=apply55GroupedSuggestionPlan(targetState,expId,plan);
+    if(!result.ok) return result;
+    return {ok:true,action:"replan",applied:result.applied,days:result.changes.map(function(c){ return c.day; })};
+  }
+  return {ok:false,error:"该异常无需自动修正。"};
+}
+/* 修正弹窗：逐项展示 异常原因/当前值/当前规则/推荐处理，按异常类型给出对应按钮。 */
+function legacy55RepairModalHTML(exp, anomalies){
+  var html='<h3>检查并修正历史计划异常</h3>';
+  for(var i=0;i<anomalies.length;i++){
+    var a=anomalies[i], dayTag=a.day!=null?"Day"+a.day+" ":"";
+    html+='<div class="confirmbox"><b>'+(i+1)+'. '+esc(dayTag+a.text)+'</b><br>'
+      +'当前值：'+esc(a.currentText)+'<br>'
+      +'当前规则：'+esc(a.ruleText)+'<br>';
+    if(a.fix==="plan-reset" || a.fix==="replan"){
+      html+='推荐处理：按当前规则修正<br>'
+        +'<button data-act="legacyRepairPlanFix" data-id="'+esc(exp.id)+'" data-type="'+esc(a.type)+'" data-day="'+(a.day!=null?a.day:"")+'">采用当前规则修正</button>';
+    }else if(a.fix==="hard-undo"){
+      html+='推荐处理：解除错误确认并重新排程<br>'
+        +'<button class="danger" data-act="legacyRepairHardFix" data-id="'+esc(exp.id)+'" data-day="'+a.day+'">解除错误确认并重新排程</button>'
+        +'<div class="muted">将清除该节点错误的实际放入确认及实际放入时间。执行人/备注保留。</div>';
+    }else{
+      html+='推荐处理：到“试验管理”修正计划放入日期';
+    }
+    html+='</div>';
+  }
+  return html+'<div class="m-foot"><button class="ghost" data-act="closeModal">关闭</button></div>';
+}
+/* 任务08.4重做：55℃排程区块的历史异常摘要入口——仅当检测到明确异常时显示。 */
+function exp55LegacyAnomaliesHTML(item, targetState){
+  if(!item || item.kind!=="ok" || !item.exp || item.exp.condition==="36±1℃") return "";
+  var anomalies=collect55LegacyPlanAnomalies(targetState,item.exp.id);
+  if(!anomalies.length) return "";
+  var html='<div class="operation-date-note conflict" style="display:block;margin:6px 0">'
+    +'⚠ 发现历史计划异常 '+anomalies.length+' 项<ol style="margin:2px 0 4px 18px">';
+  for(var i=0;i<anomalies.length;i++){
+    var a=anomalies[i];
+    html+='<li>'+esc((a.day!=null?"Day"+a.day+" ":"")+a.text)+'：'+esc(a.currentText)+'</li>';
+  }
+  return html+'</ol>'
+    +'<button class="mini" data-act="legacyRepairOpen" data-id="'+esc(item.exp.id)+'" data-anoms="'+esc(anomalyListSignature(anomalies))+'">检查并修正</button>'
+    +'</div>';
+}
+/* 任务09.3：一键重新优化已调整计划——只读 preview。
+ * 在 clone 中只对该 expId 的未确认节点临时清除 adjustedPlanPutin，
+ * 再用当前生产日期/日历规则/任务09算法重算联合建议；真实 state 完全不动。
+ * 已确认放入/进行中/已完成节点绝不参与，实际事实字段绝不进入。 */
+function build55ReoptimizationSuggestion(targetState, expId){
+  if(!targetState || typeof targetState!=="object") return null;
+  var clone=null;
+  try{ clone=JSON.parse(JSON.stringify(targetState)); }catch(e){ return null; }
+  if(!clone.executions || typeof clone.executions!=="object") clone.executions={};
+  for(var key in clone.executions){
+    if(String(key).indexOf(expId+"|")!==0) continue;
+    var parts=String(key).split("|");
+    if(parts.length!==2) continue;
+    var ex=clone.executions[key];
+    if(ex && ex.putinConfirmed!==true && ex.adjustedPlanPutin){ delete ex.adjustedPlanPutin; }
+  }
+  var plan=build55GroupedConflictSuggestions(computeSchedule(clone).rows, clone, {expId:expId});
+  if(!plan) return null;
+  /* 变化清单：新有效计划（方案内=方案日期，方案外=原计划）与当前有效计划不同的节点 */
+  var currentRows=computeSchedule(targetState).rows, planByDay={};
+  for(var g=0;g<plan.groups.length;g++){
+    for(var d=0;d<plan.groups[g].days.length;d++){
+      planByDay[plan.groups[g].days[d]]=plan.groups[g].putin;
+    }
+  }
+  var changes=[];
+  for(var i=0;i<currentRows.length;i++){
+    var row=currentRows[i];
+    if(row.expId!==expId || row.status!=="未放入") continue;
+    var suggested=planByDay[row.day] || row.originalPlanPutin;
+    var current=row.effectivePlanPutin;
+    if(!suggested || !current) continue;
+    if(current.getTime()!==suggested.getTime()){
+      changes.push({day:row.day,from:new Date(current),to:new Date(suggested)});
+    }
+  }
+  return {plan:plan,changes:changes};
+}
+/* 当前计划摘要（未确认放入节点）：批次数/最终完成/最高 Day 完成。 */
+function current55PlanSummary(targetState, expId){
+  var rows=computeSchedule(targetState).rows, putinTimes={}, takeoutTimes=[], terminalDay=null;
+  for(var i=0;i<rows.length;i++){
+    var row=rows[i];
+    if(row.expId!==expId || row.status!=="未放入") continue;
+    if(row.effectivePlanPutin) putinTimes[row.effectivePlanPutin.getTime()]=true;
+    if(row.effectivePlanTakeout) takeoutTimes.push(row.effectivePlanTakeout.getTime());
+    if(terminalDay==null || row.day>terminalDay) terminalDay=row.day;
+  }
+  var terminalTakeout=null;
+  if(terminalDay!=null){
+    for(var j=0;j<rows.length;j++){
+      var r2=rows[j];
+      if(r2.expId===expId && r2.day===terminalDay && r2.status==="未放入" && r2.effectivePlanTakeout){
+        var tt=r2.effectivePlanTakeout.getTime();
+        if(terminalTakeout==null || tt>terminalTakeout) terminalTakeout=tt;
+      }
+    }
+  }
+  var batchCount=0;
+  for(var k in putinTimes) batchCount++;
+  return {batchCount:batchCount,
+    latestTakeout:takeoutTimes.length?new Date(Math.max.apply(null,takeoutTimes)):null,
+    terminalDay:terminalDay,
+    terminalTakeout:terminalTakeout?new Date(terminalTakeout):null};
+}
+/* 任务09.3.1：把新建议投射到完整试验排程后计算摘要（与“当前计划”同口径）。
+ * 在 clone 上：保留真实已确认节点 → 清除未确认旧调整 → 写入 suggestion.plan 的新调整 →
+ * computeSchedule(clone) → 按全部未放入节点统计批次数/最晚取出/最高 Day 完成。
+ * 不得直接用 suggestion.plan.batchCount 当作“新计划总批次数”（那只是冲突节点子集）。 */
+function project55PlanSummaryAfterSuggestion(targetState, expId, suggestion){
+  if(!targetState || typeof targetState!=="object" || !suggestion || !suggestion.plan) return null;
+  var clone=null;
+  try{ clone=JSON.parse(JSON.stringify(targetState)); }catch(e){ return null; }
+  if(!clone.executions || typeof clone.executions!=="object") clone.executions={};
+  /* 1. 清除未确认节点旧调整（与 build55ReoptimizationSuggestion 一致） */
+  for(var key in clone.executions){
+    if(String(key).indexOf(expId+"|")!==0) continue;
+    var parts=String(key).split("|");
+    if(parts.length!==2) continue;
+    var ex=clone.executions[key];
+    if(ex && ex.putinConfirmed!==true && ex.adjustedPlanPutin) delete ex.adjustedPlanPutin;
+  }
+  /* 2. 写入新方案的调整计划 */
+  var plan=suggestion.plan;
+  for(var g=0;g<plan.groups.length;g++){
+    for(var d=0;d<plan.groups[g].days.length;d++){
+      var day=plan.groups[g].days[d];
+      var exW=clone.executions[exKey(expId,day)] || cleanExecution(null);
+      if(exW.putinConfirmed===true) continue;   /* 已确认节点绝不参与 */
+      exW.adjustedPlanPutin=fmtDL(plan.groups[g].putin);
+      clone.executions[exKey(expId,day)]=exW;
+    }
+  }
+  /* 3. 按完整排程统计（与 current55PlanSummary 同口径） */
+  return current55PlanSummary(clone,expId);
+}
+function compare55CurrentAndSuggestedPlan(targetState, expId, suggestion){
+  var current=current55PlanSummary(targetState,expId);
+  var suggested=project55PlanSummaryAfterSuggestion(targetState,expId,suggestion);
+  return {
+    current:current,
+    suggested:suggested,
+    changes:suggestion?suggestion.changes:[]
+  };
+}
+/* preview 签名：推荐方案签名 + 将被清除旧调整的节点列表。 */
+function reoptimize55Signature(targetState, expId, plan){
+  if(!plan) return "";
+  var cleared=[];
+  for(var key in targetState.executions){
+    if(String(key).indexOf(expId+"|")!==0) continue;
+    var parts=String(key).split("|");
+    if(parts.length!==2) continue;
+    var ex=targetState.executions[key];
+    if(ex && ex.putinConfirmed!==true && ex.adjustedPlanPutin) cleared.push(parts[1]);
+  }
+  cleared.sort(function(a,b){ return a-b; });
+  return grouped55PlanSignature(plan)+"|"+cleared.join(",");
+}
+/* 任务09.3：原子采用新建议——先清除该试验所有未确认节点的旧调整，再写入新方案；
+ * 已确认放入节点整组拒绝；失败回滚，一个都不改。 */
+function apply55ReoptimizedSuggestion(targetState, expId, suggestion){
+  if(!targetState || typeof targetState!=="object") return {ok:false,error:"状态无效。"};
+  var plan=suggestion&&suggestion.plan;
+  var changes=Array.isArray(suggestion&&suggestion.changes)?suggestion.changes:[];
+  if(!plan || !plan.groups || !plan.groups.length || !changes.length){
+    return {ok:false,error:"当前计划已经是按最新规则计算的推荐方案，无需调整。"};
+  }
+  var planByDay={};
+  for(var g=0;g<plan.groups.length;g++){
+    for(var d=0;d<plan.groups[g].days.length;d++){
+      planByDay[plan.groups[g].days[d]]=plan.groups[g].putin;
+    }
+  }
+  /* 真实执行优先：任何目标/待写节点已确认放入 → 整组拒绝 */
+  for(var c=0;c<changes.length;c++){
+    var exCh=targetState.executions[exKey(expId,changes[c].day)];
+    if(exCh && exCh.putinConfirmed===true) return {ok:false,error:"Day"+changes[c].day+" 已确认放入，整组未采用。"};
+  }
+  for(var keyP in planByDay){
+    var exP=targetState.executions[exKey(expId,keyP)];
+    if(exP && exP.putinConfirmed===true) return {ok:false,error:"Day"+keyP+" 已确认放入，整组未采用。"};
+  }
+  var snapshot=JSON.stringify(targetState.executions);
+  try{
+    /* 1. 清除该试验所有未确认节点的旧调整（新方案不再需要的节点恢复原计划） */
+    for(var key2 in targetState.executions){
+      if(String(key2).indexOf(expId+"|")!==0) continue;
+      var parts2=String(key2).split("|");
+      if(parts2.length!==2) continue;
+      var exC=targetState.executions[key2];
+      if(exC && exC.putinConfirmed!==true && exC.adjustedPlanPutin){
+        delete exC.adjustedPlanPutin;
+        targetState.executions[key2]=exC;
+      }
+    }
+    /* 2. 写入新方案的调整计划 */
+    for(var key3 in planByDay){
+      var exW=exOf(targetState,expId,key3);
+      exW.adjustedPlanPutin=fmtDL(planByDay[key3]);
+      targetState.executions[exKey(expId,key3)]=exW;
+    }
+  }catch(e){
+    targetState.executions=JSON.parse(snapshot);
+    return {ok:false,error:"写入失败，未修改任何计划。"};
+  }
+  return {ok:true,applied:changes.length};
+}
+/* 重新优化确认弹窗：当前 vs 新建议 + 实际会改变的 Day 列表；无变化时仅提示。 */
+function reoptimize55ModalHTML(exp, comparison, sig){
+  function fmtP(summary){
+    if(!summary) return "—";
+    return summary.batchCount+' 个批次'
+      +(summary.latestTakeout?'；最终完成 '+fmtDT(summary.latestTakeout):'')
+      +(summary.terminalDay!=null&&summary.terminalTakeout?'；Day'+summary.terminalDay+' 完成 '+fmtDT(summary.terminalTakeout):'');
+  }
+  var changes=comparison.changes||[];
+  var html='<h3>重新优化当前计划</h3><div class="confirmbox">'
+    +'当前计划：'+esc(fmtP(comparison.current))+'<br>'
+    +'新建议：'+esc(fmtP(comparison.suggested))+'</div>';
+  if(!changes.length){
+    return html+'<div class="confirmbox">当前计划已经是按最新规则计算的推荐方案，无需调整。</div>'
+      +'<div class="m-foot"><button class="ghost" data-act="closeModal">关闭</button></div>';
+  }
+  html+='<div class="confirmbox">将调整：<br>';
+  for(var i=0;i<changes.length;i++){
+    var ch=changes[i];
+    html+='Day'+ch.day+'：'+(ch.from?esc(fmtCompact(ch.from)):'—')+' → '+(ch.to?esc(fmtCompact(ch.to)):'原计划')+'<br>';
+  }
+  return html+'</div>'
+    +'<div class="muted">本次只重新计算尚未确认放入的计划节点。已确认执行记录不会改变。</div>'
+    +'<div class="m-foot">'
+    +'<button data-act="reoptimizeYes" data-id="'+esc(exp.id)+'" data-sig="'+esc(sig)+'">采用新建议</button>'
+    +'<button class="ghost" data-act="closeModal">取消</button></div>';
+}
+/* 任务09.3：55℃排程区块的重新优化入口——存在未确认且带调整计划的节点时显示。 */
+function exp55ReoptimizeHTML(item, targetState){
+  if(!item || item.kind!=="ok" || !item.exp || item.exp.condition==="36±1℃") return "";
+  var waiting=0, hasAdj=false;
+  for(var i=0;i<item.rows.length;i++){
+    var row=item.rows[i];
+    if(row.status==="未放入") waiting++;
+    if(row.status==="未放入" && row.adjusted) hasAdj=true;
+  }
+  if(!waiting || !hasAdj) return "";
+  return '<div class="operation-date-note" style="display:block;margin:6px 0">'
+    +'<button class="mini" data-act="reoptimizeOpen" data-id="'+esc(item.exp.id)+'">重新优化建议</button>'
+    +'</div>';
+}
+/* 任务09.3：plan/modal 共用触发入口——只生成 preview，绝不立即修改 state。 */
+function open55ReoptimizeFromTrigger(t){
+  var id=t.getAttribute("data-id");
+  if(!id) return;
+  var exp=findExp(id);
+  if(!exp) return;
+  var suggestion=build55ReoptimizationSuggestion(state,exp.id);
+  if(!suggestion){ showToast("当前没有可重新计算的建议。", true); return; }
+  var comparison=compare55CurrentAndSuggestedPlan(state,exp.id,suggestion);
+  var sig=reoptimize55Signature(state,exp.id,suggestion.plan);
+  openModal(reoptimize55ModalHTML(exp,comparison,sig));
+}
+/* 任务08.4重做：plan/modal 共用触发入口——按当前 state 重检测，列表签名变化即拒绝。 */
+function open55LegacyRepairFromTrigger(t){
+  var id=t.getAttribute("data-id");
+  if(!id) return;
+  var exp=findExp(id);
+  if(!exp) return;
+  var anomalies=collect55LegacyPlanAnomalies(state,exp.id);
+  var sig=t.getAttribute("data-anoms")||"";
+  if(!anomalies.length || anomalyListSignature(anomalies)!==sig){
+    showToast("计划状态已变化，请重新查看。", true); return;
+  }
+  openModal(legacy55RepairModalHTML(exp, anomalies));
+}
+/* 任务08.2：plan / today / modal 三处共用的“采用推荐方案”触发入口。
+ * 按当前 state 重算推荐方案 → 签名校验 → 全量校验 → 打开确认弹窗（任务08流程）。 */
+function open55GroupedApplyFromTrigger(t){
+  var id=t.getAttribute("data-id");
+  if(!id) return;
+  var exp=findExp(id);
+  if(!exp) return;
+  var plan=build55GroupedConflictSuggestions(computeSchedule(state).rows,state,{expId:exp.id});
+  var sig=t.getAttribute("data-sig")||"";
+  if(!plan || grouped55PlanSignature(plan)!==sig){
+    showToast("当前排程或日期规则已变化，请重新查看调整建议。", true); return;
+  }
+  var checked=validate55GroupedSuggestionPlanForApply(state,exp.id,plan);
+  if(!checked.ok){ showToast(checked.error, true); return; }
+  openModal(apply55GroupedPlanConfirmHTML(exp, plan));
+}
 /* Date → datetime-local 文本（调整计划弹窗用） */
 function fmtDL(dt){ return ymdOf(dt)+"T"+pad2(dt.getHours())+":"+pad2(dt.getMinutes()); }
 /* 当前时间 → datetime-local 文本 */
@@ -1196,7 +2383,8 @@ function exportJSONString(state){
     schemaVersion:(typeof state.schemaVersion==="number" ? state.schemaVersion : 6),
     uiVersion: state.uiVersion || UI_VERSION,
     exportedAt:new Date().toISOString(),
-    opTime:state.opTime, experiments:state.experiments, executions:state.executions}, null, 2);
+    opTime:state.opTime, calendarRules:cleanCalendarRules(state.calendarRules),
+    experiments:state.experiments, executions:state.executions}, null, 2);
 }
 function cleanExperiment(e){
   return {
@@ -1381,6 +2569,7 @@ function importJSONString(text){
     version: (typeof d.version === "number" && d.version >= 4) ? d.version : 3,
     schemaVersion: (typeof d.schemaVersion==="number") ? d.schemaVersion : undefined,
     opTime: (typeof d.opTime==="string" && parseOpTime(d.opTime)) ? d.opTime : "10:00",
+    calendarRules: cleanCalendarRules(d.calendarRules),
     experiments: d.experiments.map(cleanExperiment),
     executions: (d.executions && typeof d.executions==="object") ? d.executions : {}
   };
@@ -1512,6 +2701,7 @@ function writeSyncToken(token){
 function stateSnapshotForSync(localState){
   var snap=JSON.parse(JSON.stringify(localState));
   delete snap._pendingSave;
+  normalizeCalendarRules(snap);
   if(snap.schemaVersion!==6) throw new Error("只允许同步 schemaVersion 6 数据");
   return snap;
 }
@@ -1710,7 +2900,7 @@ function downloadStateWithAdapter(adapter,localState,localMeta,confirmFn){
 }
 /* V0.5.4：schemaVersion=数据结构版本（迁移依据），uiVersion=界面版本，两者互不混用 */
 function defaultState(){ return {version:4, schemaVersion:6, uiVersion:UI_VERSION,
-  opTime:"10:00", experiments:[], executions:{}}; }
+  opTime:"10:00", calendarRules:{customSkipDates:[]}, experiments:[], executions:{}}; }
 function loadState(){
   try{
     var raw = localStorage.getItem(LS_KEY)
@@ -1724,6 +2914,7 @@ function loadState(){
     if(!s.opTime) s.opTime = "10:00";
     migrateExecutions(s);
     var pending = ensurePlanTimes(s)>0;
+    if(normalizeCalendarRules(s)) pending=true;
     var m51 = migrateV051(s, raw);           /* V0.5.1 旧数据迁移（只执行一次） */
     var m54 = migrateV054(s);                /* V0.5.4：独立 schemaVersion + 执行记录规范化 */
     var m60 = migrateV06(s);                 /* V0.6：独立 36℃协议 */
@@ -1734,6 +2925,7 @@ function loadState(){
 }
 function saveState(options){
   try{
+    normalizeCalendarRules(state);
     localStorage.setItem(LS_KEY, JSON.stringify(state));
     if(options&&options.syncedMetadata){
       var localMeta=loadSyncMeta(), remoteMeta=options.syncedMetadata;
@@ -1803,6 +2995,49 @@ function openSyncSettings(){
     if(document.getElementById("syncTokenClear").checked) writeSyncToken("");
     else if(token) writeSyncToken(token);
     closeModal(); renderSyncStatus(); showToast("同步设置已保存 ✓");
+  });
+}
+
+function dateRulesSettingsHTML(targetState){
+  var rules=operationDateRulesForState(targetState), dates=rules.customSkipDates;
+  var official=loadHolidayCalendar(chinaHolidayCalendarProvider,2026);
+  var holidayStatus=official.available
+    ? '2026 中国法定节假日已加载｜来源：'+official.source
+    : '2026 中国法定节假日尚未加载';
+  var list=dates.length ? dates.map(function(date){
+    return '<button class="skipbtn on" data-skip-date="'+esc(date)+'" title="删除此日期">'+esc(date)+'　删除</button>';
+  }).join("") : '<span class="muted">尚未添加自定义跳过日期</span>';
+  return '<h3>日期规则 / 跳过日期</h3>'
+    +'<div class="hintbox">'+esc(holidayStatus)+'</div>'
+    +'<div class="confirmbox">2026 节假日数据已用于操作日程冲突提示；不会修改计划时间或自动顺延。</div>'
+    +'<div class="egrid"><label>新增单日跳过日期<input id="customSkipDateInput" type="date"></label>'
+    +'<div style="display:flex;align-items:flex-end"><button id="customSkipDateAdd">新增日期</button></div></div>'
+    +'<div class="hintbox">已保存日期（点击“删除”移除）</div><div id="customSkipDateList" class="skipgrid">'+list+'</div>'
+    +'<div class="m-foot"><button class="ghost" data-act="closeModal">完成</button></div>';
+}
+function openDateRulesSettings(){
+  normalizeCalendarRules(state);
+  openModal(dateRulesSettingsHTML(state));
+  var input=document.getElementById("customSkipDateInput"), add=document.getElementById("customSkipDateAdd");
+  function addDate(){
+    var before=state.calendarRules.customSkipDates.length;
+    var key=addCustomSkipDate(state,input&&input.value);
+    if(!key){ showToast("请选择有效日期",true); return; }
+    var changed=state.calendarRules.customSkipDates.length!==before;
+    if(changed) saveState();
+    openDateRulesSettings();
+    showToast(changed?("已添加跳过日期："+key):("该日期已存在："+key));
+  }
+  if(add) add.addEventListener("click",addDate);
+  if(input) input.addEventListener("keydown",function(ev){ if(ev.key==="Enter"){ ev.preventDefault(); addDate(); } });
+  var list=document.getElementById("customSkipDateList");
+  if(list) list.addEventListener("click",function(ev){
+    var button=ev.target&&ev.target.closest?ev.target.closest("[data-skip-date]"):null;
+    if(!button) return;
+    var key=button.getAttribute("data-skip-date");
+    if(removeCustomSkipDate(state,key)){
+      saveState(); openDateRulesSettings(); showToast("已删除跳过日期："+key);
+    }
   });
 }
 function browserSyncConfirm(message){ return typeof window!=="undefined" && typeof window.confirm==="function" ? window.confirm(message) : false; }
@@ -1897,6 +3132,7 @@ function bindEvents(){
     if(f) f.click();
   });
   on("importFile", "change", importJSONFile);
+  on("btnDateRules", "click", openDateRulesSettings);
   on("btnSyncSettings", "click", openSyncSettings);
   on("btnSyncUpload", "click", uploadToCloud);
   on("btnSyncDownload", "click", downloadFromCloud);
@@ -2458,6 +3694,55 @@ function onModalClick(ev){
     showToast("Day"+day+" 已恢复原计划 ✓");
     return;
   }
+  if(act==="groupedApplyOpen"){
+    /* 任务08.2：与排程页/操作日程共用同一入口 helper */
+    open55GroupedApplyFromTrigger(t);
+    return;
+  }
+  if(act==="groupedApplyYes"){
+    /* 确认采用：再次按当前 state 重算并全量校验，全部合法才一次性写入 */
+    var planYes=build55GroupedConflictSuggestions(computeSchedule(state).rows,state,{expId:exp.id});
+    var sigYes=t.getAttribute("data-sig")||"";
+    if(!planYes || grouped55PlanSignature(planYes)!==sigYes){
+      showToast("当前排程或日期规则已变化，请重新查看调整建议。", true); return;
+    }
+    var resultYes=apply55GroupedSuggestionPlan(state,exp.id,planYes);
+    if(!resultYes.ok){ showToast(resultYes.error, true); return; }
+    saveState(); closeModal(); renderCurrent();
+    showToast("已采用推荐方案：调整 "+resultYes.changes.length+" 个节点 ✓");
+    return;
+  }
+  if(act==="legacyRepairPlanFix" || act==="legacyRepairHardFix"){
+    /* 任务08.4重做：执行单项修正前按当前 state 重检测，异常已消失或状态变化即拒绝 */
+    var anomaly={type:t.getAttribute("data-type")||"",day:t.getAttribute("data-day")?+t.getAttribute("data-day"):null};
+    var freshL=collect55LegacyPlanAnomalies(state,exp.id), currentL=null;
+    for(var li=0;li<freshL.length;li++){
+      if(freshL[li].type===anomaly.type && freshL[li].day===anomaly.day){ currentL=freshL[li]; break; }
+    }
+    if(!currentL){ showToast("该异常已不存在或状态已变化，请重新检查。", true); return; }
+    if(act==="legacyRepairHardFix" && currentL.fix!=="hard-undo"){ showToast("该节点不是可解除的错误确认记录。", true); return; }
+    if(act==="legacyRepairPlanFix" && currentL.fix!=="plan-reset" && currentL.fix!=="replan"){ showToast("该异常不能自动修正。", true); return; }
+    var resultL=apply55LegacyRepairFix(state,exp.id,currentL);
+    if(!resultL.ok){ showToast(resultL.error, true); return; }
+    saveState(); closeModal(); renderCurrent();
+    if(resultL.action==="replan") showToast("已按当前规则修正 "+resultL.applied+" 个节点 ✓");
+    else if(resultL.action==="hard-undo") showToast("Day"+resultL.day+" 已解除错误确认，可重新排程 ✓");
+    else showToast("Day"+resultL.day+" 已恢复原计划，可用当前规则重新调整 ✓");
+    return;
+  }
+  if(act==="reoptimizeYes"){
+    /* 任务09.3：确认采用前按当前 state 重算 preview，签名过期即拒绝 */
+    var suggestionYes=build55ReoptimizationSuggestion(state,exp.id);
+    var sigYes=t.getAttribute("data-sig")||"";
+    if(!suggestionYes || reoptimize55Signature(state,exp.id,suggestionYes.plan)!==sigYes){
+      showToast("计划或规则已变化，请重新查看建议。", true); return;
+    }
+    var resultRe=apply55ReoptimizedSuggestion(state,exp.id,suggestionYes);
+    if(!resultRe.ok){ showToast(resultRe.error, true); return; }
+    saveState(); closeModal(); renderCurrent();
+    showToast("已按新建议重新优化 "+resultRe.applied+" 个节点 ✓");
+    return;
+  }
   if(day!==null && act==="nodeSave"){
     /* 保存编辑当前节点（V0.5.4）：实际放入/预计取出/执行人/备注一次性保存；
      * 标准目标 = 新实际放入 + Day×24h 自动重算；预计取出仍跟随旧标准目标 → 视为未人工调整
@@ -2813,6 +4098,12 @@ function planHTML(sch, st){
         html += '<div class="progress" style="border-color:var(--green)">'
           + '<span class="badge all">全部完成</span> 可在“试验管理”中归档项目</div>';
       }
+      /* 任务08.1：试验级冲突摘要（未放入冲突节点数量与 Day 列表 + 联合调整建议入口） */
+      html += exp55ConflictSummaryHTML(it, st);
+      /* 任务08.4重做：试验级历史计划异常摘要（仅检测到明确逻辑异常时显示） */
+      html += exp55LegacyAnomaliesHTML(it, st);
+      /* 任务09.3：一键重新优化已调整计划（存在未确认且带调整的节点时显示） */
+      html += exp55ReoptimizeHTML(it, st);
       /* 批次摘要（V0.5.4：标题“待放入批次”，只列仍未放入的节点）：一行一个批次 */
       if(it.batches.length){
         html += '<div class="batlines"><div class="batch-title">待放入批次</div>';
@@ -2990,6 +4281,12 @@ function onPlanClick(ev){
     if(!r36 || r36.status!=="待执行"){ showToast("只有尚未执行的 36℃任务可以调整计划。",true); return; }
     openAdjust36Plan(exp,r36); return;
   }
+  /* 任务08.2：试验级【查看联合调整建议】按钮不带 data-day，须在 day 拦截前处理 */
+  if(act==="groupedApplyOpen"){ open55GroupedApplyFromTrigger(t); return; }
+  /* 任务08.4重做：【检查并修正】在 planBody 渲染，须在本 handler（而非仅 onModalClick）处理 */
+  if(act==="legacyRepairOpen"){ open55LegacyRepairFromTrigger(t); return; }
+  /* 任务09.3：【重新优化建议】在 planBody 渲染，只打开 preview 弹窗 */
+  if(act==="reoptimizeOpen"){ open55ReoptimizeFromTrigger(t); return; }
   if(day===null) return;
   if(act==="adjustPlan"){
     var sch = computeSchedule({opTime:state.opTime, experiments:[exp], executions:state.executions});
@@ -3236,7 +4533,10 @@ function todayPutinRow(r){
   return '<tr data-day="'+r.day+'">'
     + '<td class="dt">'+(planT ? '<span class="dt" title="'+planTitle+'">'+esc(fmtCompact(planT))
       + ((r.status==="未放入" && r.adjusted) ? '<span class="adjmark">已调整</span>' : "")+'</span>'
-      : '<span class="muted">—</span>')+'</td>'
+      : '<span class="muted">—</span>')+operationDateStatusHTML(planT,state)
+      /* 任务08.1：待放入行同时提示对应计划取出日期的冲突（放入可操作、取出冲突时也能看到） */
+      +((r.status==="未放入") ? operationDateStatusHTML(currentTakeoutOf(r),state) : "")
+      +operation55SuggestionHTML(r,state,planT)+'</td>'
     + '<td><span class="tasktype">55℃·放入</span></td>'
     + '<td>'+esc(r.no)+'</td>'
     + '<td>'+esc(r.project||"")+'</td>'
@@ -3282,8 +4582,10 @@ function todayTakeoutRow(r){
     personCell = '<input type="text" data-act="execText" data-field="person" data-id="'+esc(r.expId)+'" data-day="'+r.day+'" value="'+esc(ex.person||"")+'">';
     noteCell = '<input type="text" data-act="execText" data-field="note" data-id="'+esc(r.expId)+'" data-day="'+r.day+'" value="'+esc(ex.note||"")+'">';
   }
+  var planT=currentTakeoutOf(r);
   return '<tr data-day="'+r.day+'">'
-    + '<td class="dt">'+todayTimeCell(currentTakeoutOf(r))+'</td>'   /* 进行中=当前预计取出 */
+    + '<td class="dt">'+todayTimeCell(planT)+operationDateStatusHTML(planT,state)
+    +operation55SuggestionHTML(r,state,planT)+'</td>'   /* 进行中=当前预计取出 */
     + '<td><span class="tasktype">55℃·取出</span></td>'
     + '<td>'+esc(r.no)+'</td>'
     + '<td>'+esc(r.project||"")+'</td>'
@@ -3338,6 +4640,7 @@ function today36Row(r){
     +(r.weekendShifted?' <span class="adjmark" title="周末节点按协议顺延至周一">周末顺延</span>':'')
     +(r.day===0&&r.weekend?' <span class="weekend">周末·不顺延</span>':'');
   plan+='<div class="muted" style="font-size:11px">'+(r.day===0?'原计划开始：':'标准节点：')+esc(fmtCompact(r.originalPlanTime))+'</div>';
+  plan+=operationDateStatusHTML(r.currentPlanTime,state);
   var qty,time,person,note,ops;
   if(locked){
     qty=esc(ex.qty||'—');
@@ -3525,6 +4828,8 @@ function onTodayClick(ev){
     showToast("已批量确认放入 "+days.length+" 个 Day ✓");
     return;
   }
+  /* 任务08.2：操作日程【采用推荐方案】按钮不带 data-day，须在 day 拦截前处理 */
+  if(act==="groupedApplyOpen"){ open55GroupedApplyFromTrigger(t); return; }
   if(day===null) return;
   if(act==="putinConfirm"){ openPutinConfirm(exp, day); }
   else if(act==="completeConfirm"){ openCompleteConfirm(exp, day); }
@@ -4910,19 +6215,27 @@ function runSelfTests(){
           && document.getElementById("expList").textContent.indexOf("TP-99")>=0;
         ok(ok50, "T50 点击【进行中】→ 切回活动列表", "");
 
-        /* T51 排程结果只读且简化（V0.5.1）：每 Day 一行、8 列、无按钮/输入框/选择框 */
+        /* T51 排程结果只读且简化（V0.5.1）：每 Day 一行、8 列；Day 行无旧式直接操作控件。
+         * V0.7：试验级建议入口（查看联合调整建议/重新优化建议/检查并修正）允许出现在 planBody，
+         * 但不得出现在 Day 行内，也不允许其他按钮混入。 */
         var st51 = setup();
         st51.experiments[0].id = "EX51";
         state = st51;
         renderPlan();
         var dayrows51 = document.querySelectorAll('#planBody tr.dayrow').length;
         var inputs51 = document.querySelectorAll('#planBody input, #planBody select').length;
-        var btns51 = document.querySelectorAll('#planBody button').length;
+        var dayCtrl51 = document.querySelectorAll('#planBody tr.dayrow button, #planBody tr.dayrow input, #planBody tr.dayrow select').length;
+        var allowedActs51 = {"groupedApplyOpen":1, "reoptimizeOpen":1, "legacyRepairOpen":1};
+        var onlyEntryBtns51 = true;
+        var planBtns51 = document.querySelectorAll('#planBody button');
+        for(var pb51=0; pb51<planBtns51.length; pb51++){
+          if(!allowedActs51[planBtns51[pb51].getAttribute("data-act")]) onlyEntryBtns51 = false;
+        }
         var ths51 = document.querySelectorAll('#planBody table.daytable thead th').length;
         var wrap51 = document.querySelector('#planBody .table-wrap') !== null;
-        ok(dayrows51===14 && inputs51===0 && btns51===0 && ths51===8 && wrap51,
-           "T51 排程结果只读且简化：每 Day 一行、8 列、无按钮/输入框、有宽度保护",
-           "day行="+dayrows51+"，输入框="+inputs51+"，按钮="+btns51+"，列数="+ths51+"，wrap="+wrap51);
+        ok(dayrows51===14 && inputs51===0 && dayCtrl51===0 && onlyEntryBtns51 && ths51===8 && wrap51,
+           "T51 排程结果只读且简化：每 Day 一行、8 列、Day 行无旧式控件、仅试验级建议入口、有宽度保护",
+           "day行="+dayrows51+"，输入框="+inputs51+"，Day行控件="+dayCtrl51+"，仅试验级入口="+onlyEntryBtns51+"，列数="+ths51+"，wrap="+wrap51);
 
         /* T52 有偏差时排程结果红色显示偏差（只读偏差列） */
         var st52 = setup();
@@ -5305,11 +6618,12 @@ function runSelfTests(){
            "T97 点击计划放入时间（小入口）打开调整弹窗（含当前计划/原计划）",
            "入口="+ok97a+"，弹窗="+ok97b);
 
-        /* T98 恢复原计划仅在调整弹窗内操作（用户用例 T08） */
+        /* T98 恢复原计划仅在调整弹窗内操作（用户用例 T08）
+         * V0.7：主表 Day 行不出现直接操作控件；试验级建议入口（非 Day 行）允许存在。 */
         var ok98a = document.querySelector('#planBody [data-act="restorePlan"]')===null
-          && document.querySelector('#planBody button')===null;   /* 主表无任何按钮 */
+          && document.querySelector('#planBody tr.dayrow button, #planBody tr.dayrow input')===null;
         var ok98b = document.querySelector('#modalBox [data-act="restorePlan"]')!==null;
-        ok(ok98a && ok98b, "T98 恢复原计划只在调整弹窗内，主表无恢复按钮", "");
+        ok(ok98a && ok98b, "T98 恢复原计划只在调整弹窗内，主表 Day 行无直接操作按钮", "");
 
         /* T99 普通桌面宽度下排程结果不横向溢出（用户用例 T09） */
         var st99 = setup();
